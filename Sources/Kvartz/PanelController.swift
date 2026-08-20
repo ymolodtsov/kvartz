@@ -41,9 +41,17 @@ final class QueryPanelController: NSWindowController {
             rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
         )
 
-        Publishers.CombineLatest3(model.$editorHeight, model.$displayedAnswer, model.$phase)
+        Publishers.CombineLatest(
+            Publishers.CombineLatest4(
+                model.$editorHeight,
+                model.$followUpEditorHeight,
+                model.$displayedAnswer,
+                model.$phase
+            ),
+            model.$isRevealingAnswer
+        )
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
-            .sink { [weak self] _, _, _ in self?.resizeToContent(animated: true) }
+            .sink { [weak self] _, _ in self?.resizeToContent(animated: true) }
             .store(in: &cancellables)
     }
 
@@ -98,16 +106,27 @@ final class QueryPanelController: NSWindowController {
         case .ready:
             return base + 24
         case .loading:
-            return base + 74
+            if model.conversation.isEmpty { return base + 74 }
+            return conversationPanelHeight(base: base, additionalChrome: 88)
         case .error:
-            return min(base + 104, 380)
+            if model.conversation.isEmpty { return min(base + 104, 380) }
+            return conversationPanelHeight(base: base, additionalChrome: model.followUpEditorHeight + 136)
         case .answer:
-            let widthInCharacters: CGFloat = 46
-            let explicitLines = model.displayedAnswer.split(separator: "\n", omittingEmptySubsequences: false).count
-            let wrappedLines = ceil(CGFloat(model.displayedAnswer.count) / widthInCharacters)
-            let responseHeight = min(max(76, max(CGFloat(explicitLines), wrappedLines) * 24 + 24), 520)
-            return min(base + responseHeight + 42, (NSScreen.main?.visibleFrame.height ?? 800) - 90)
+            let chrome = model.isRevealingAnswer ? 52 : model.followUpEditorHeight + 64
+            return conversationPanelHeight(base: base, additionalChrome: chrome)
         }
+    }
+
+    private func conversationPanelHeight(base: CGFloat, additionalChrome: CGFloat) -> CGFloat {
+        let widthInCharacters: CGFloat = 46
+        let text = model.conversation
+            .map { "\($0.question)\n\($0.answer)" }
+            .joined(separator: "\n") + model.pendingQuestion
+        let explicitLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        let wrappedLines = ceil(CGFloat(text.count) / widthInCharacters)
+        let contentHeight = min(max(92, max(CGFloat(explicitLines), wrappedLines) * 24 + 28), 560)
+        let screenHeight = window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
+        return min(base + contentHeight + additionalChrome, screenHeight - 64)
     }
 
     private func positionForOpening(_ panel: NSWindow) {
@@ -143,4 +162,5 @@ extension QueryPanelController: NSWindowDelegate {
 
 extension Notification.Name {
     static let kvartzFocusQuery = Notification.Name("kvartzFocusQuery")
+    static let kvartzFocusFollowUp = Notification.Name("kvartzFocusFollowUp")
 }

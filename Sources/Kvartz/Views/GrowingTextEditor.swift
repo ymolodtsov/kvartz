@@ -8,6 +8,11 @@ struct GrowingTextEditor: NSViewRepresentable {
     let onSubmit: () -> Void
     let onEscapeWhenEmpty: () -> Void
     var isEnabled = true
+    var fontSize: CGFloat = 17
+    var minimumHeight: CGFloat = 50
+    var maximumHeight: CGFloat = 184
+    var verticalTextInset: CGFloat = 14
+    var focusNotification: Notification.Name? = .kvartzFocusQuery
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -25,10 +30,10 @@ struct GrowingTextEditor: NSViewRepresentable {
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
-        textView.font = .systemFont(ofSize: 17, weight: .regular)
+        textView.font = .systemFont(ofSize: fontSize, weight: .regular)
         textView.textColor = .white
         textView.insertionPointColor = .white
-        textView.textContainerInset = NSSize(width: 2, height: 5)
+        textView.textContainerInset = NSSize(width: 2, height: verticalTextInset)
         textView.textContainer?.widthTracksTextView = true
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -39,23 +44,28 @@ struct GrowingTextEditor: NSViewRepresentable {
         scrollView.documentView = textView
 
         context.coordinator.textView = textView
-        context.coordinator.focusObserver = NotificationCenter.default.addObserver(
-            forName: .kvartzFocusQuery,
-            object: nil,
-            queue: .main
-        ) { [weak textView] _ in
-            guard textView?.isEditable == true else { return }
-            textView?.window?.makeFirstResponder(textView)
+        if let focusNotification {
+            context.coordinator.focusObserver = NotificationCenter.default.addObserver(
+                forName: focusNotification,
+                object: nil,
+                queue: .main
+            ) { [weak textView] _ in
+                guard textView?.isEditable == true else { return }
+                textView?.window?.makeFirstResponder(textView)
+            }
         }
         DispatchQueue.main.async { context.coordinator.recalculateHeight() }
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
         guard let textView = scrollView.documentView as? SubmitTextView else { return }
         if textView.string != text { textView.string = text }
         textView.onSubmit = onSubmit
         textView.onEscapeWhenEmpty = onEscapeWhenEmpty
+        textView.font = .systemFont(ofSize: fontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 2, height: verticalTextInset)
         textView.isEditable = isEnabled
         textView.isSelectable = isEnabled
         if !isEnabled, textView.window?.firstResponder === textView {
@@ -85,7 +95,7 @@ struct GrowingTextEditor: NSViewRepresentable {
             guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
             layoutManager.ensureLayout(for: container)
             let used = layoutManager.usedRect(for: container).height + textView.textContainerInset.height * 2
-            let next = min(max(50, ceil(used)), 184)
+            let next = min(max(parent.minimumHeight, ceil(used)), parent.maximumHeight)
             if abs(parent.height - next) > 0.5 { parent.height = next }
         }
     }

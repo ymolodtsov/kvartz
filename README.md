@@ -42,4 +42,6 @@ By default, the public build is ad-hoc signed. Set `CODE_SIGN_IDENTITY` to a Dev
 - Shift–Return: insert a new line
 - Escape: hide Kvartz when the input field is empty
 - The editor and panel grow with their content
+- Ask follow-up questions without losing the conversation context
+- Edit the response prompt under Settings → General
 - The panel stays open until you click ×

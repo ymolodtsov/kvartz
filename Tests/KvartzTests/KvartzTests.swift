@@ -3,9 +3,19 @@ import XCTest
 
 final class KvartzTests: XCTestCase {
     func testPromptPolicyKeepsAnswersShortAndAllowsFormatting() {
-        XCTAssertTrue(PromptPolicy.system.contains("briefly"))
-        XCTAssertTrue(PromptPolicy.system.contains("Markdown"))
-        XCTAssertTrue(PromptPolicy.system.contains("links"))
+        XCTAssertTrue(PromptPolicy.defaultSystem.contains("briefly"))
+        XCTAssertTrue(PromptPolicy.defaultSystem.contains("Markdown"))
+        XCTAssertTrue(PromptPolicy.defaultSystem.contains("links"))
+    }
+
+    func testPromptPolicyDefaultsAndPersistsEdits() throws {
+        let suiteName = "KvartzTests.PromptPolicy.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(PromptPolicy.load(from: defaults), PromptPolicy.defaultSystem)
+        PromptPolicy.save("Use pirate vocabulary.", to: defaults)
+        XCTAssertEqual(PromptPolicy.load(from: defaults), "Use pirate vocabulary.")
     }
 
     func testDefaultShortcutIsReadable() {

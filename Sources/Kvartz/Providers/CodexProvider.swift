@@ -63,7 +63,7 @@ actor CodexProvider {
         throw LLMError.codex("Codex stopped before sign-in completed.")
     }
 
-    func answer(query: String, model: String) async throws -> String {
+    func answer(messages: [ConversationMessage], systemPrompt: String, model: String) async throws -> String {
         let session = try await connectedSession()
         defer { session.stop() }
 
@@ -86,7 +86,11 @@ actor CodexProvider {
             throw LLMError.codex("Codex did not start a query thread.")
         }
 
-        let prompt = "\(PromptPolicy.system)\n\nUser question:\n\(query)"
+        let transcript = messages.map { message in
+            let label = message.role == .assistant ? "Assistant" : "User"
+            return "\(label):\n\(message.content)"
+        }.joined(separator: "\n\n")
+        let prompt = "\(systemPrompt)\n\nConversation:\n\(transcript)"
         _ = try await session.request(
             method: "turn/start",
             params: [

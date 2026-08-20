@@ -78,13 +78,12 @@ struct QuickQueryView: View {
     }
 
     private var editor: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .leading) {
             if model.query.isEmpty {
                 Text(model.configuredProviders.isEmpty ? "Configure a provider in Settings…" : "Ask anything…")
                     .font(.system(size: 17))
                     .foregroundStyle(.white.opacity(0.34))
                     .padding(.horizontal, 13)
-                    .padding(.vertical, 11)
                     .allowsHitTesting(false)
             }
             GrowingTextEditor(
@@ -92,7 +91,7 @@ struct QuickQueryView: View {
                 height: $model.editorHeight,
                 onSubmit: model.submit,
                 onEscapeWhenEmpty: onClose,
-                isEnabled: !model.configuredProviders.isEmpty
+                isEnabled: !model.configuredProviders.isEmpty && model.conversation.isEmpty && model.phase != .loading
             )
                 .frame(height: model.editorHeight)
                 .padding(.horizontal, 10)
@@ -156,42 +155,83 @@ struct QuickQueryView: View {
                 .padding(.horizontal, 4)
             }
         case .loading:
-            ProcessingView()
-                .frame(height: 58)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+            if model.conversation.isEmpty {
+                ProcessingView()
+                    .frame(height: 58)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                answerView
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         case .answer:
             answerView
                 .transition(.opacity.combined(with: .move(edge: .top)))
-        case .error(let message):
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color.orange)
-                Text(message)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .textSelection(.enabled)
-                Spacer()
+        case .error:
+            if model.conversation.isEmpty {
+                errorView
+            } else {
+                answerView
             }
-            .padding(14)
-            .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
     private var answerView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollView {
-                Text(markdown: model.displayedAnswer)
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.93))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 3)
+            ZStack(alignment: .bottom) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
+                                if index > 0 {
+                                    submittedQuestion(turn.question)
+                                }
+
+                                Text(markdown: answerText(for: index, turn: turn))
+                                    .font(.system(size: 16, weight: .regular))
+                                    .foregroundStyle(.white.opacity(0.93))
+                                    .lineSpacing(4)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+
+                            if !model.pendingQuestion.isEmpty {
+                                submittedQuestion(model.pendingQuestion)
+                                ProcessingView()
+                                    .frame(height: 44)
+                            }
+
+                            Color.clear
+                                .frame(height: 52)
+                                .id("conversation-bottom")
+                        }
+                        .padding(.horizontal, 3)
+                    }
+                    .onChange(of: model.pendingQuestion) { _, question in
+                        guard !question.isEmpty else { return }
+                        DispatchQueue.main.async {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: model.displayedAnswer) { _, _ in
+                        guard model.conversation.count > 1 else { return }
+                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    }
+                }
+
+                LinearGradient(
+                    colors: [.clear, Color.black.opacity(0.93)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 52)
+                .allowsHitTesting(false)
             }
             .scrollIndicators(.hidden)
 
-            HStack {
-                Text("\(model.displayedAnswer.count) characters")
+            HStack(spacing: 10) {
+                Text("\(model.answer.count) characters")
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.27))
                     .monospacedDigit()
@@ -227,8 +267,93 @@ struct QuickQueryView: View {
                 .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.22), value: didCopy)
                 .help(didCopy ? "Copied to clipboard" : "Copy answer")
             }
+
+            if case .error = model.phase {
+                errorView
+            }
+
+            if !model.conversation.isEmpty && model.phase != .loading && !model.isRevealingAnswer {
+                followUpEditor
+            }
         }
         .padding(.horizontal, 4)
+    }
+
+    private var followUpEditor: some View {
+        ZStack(alignment: .leading) {
+            if model.followUpQuery.isEmpty {
+                Text("Ask a follow-up…")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.34))
+                    .padding(.horizontal, 13)
+                    .allowsHitTesting(false)
+            }
+
+            GrowingTextEditor(
+                text: $model.followUpQuery,
+                height: $model.followUpEditorHeight,
+                onSubmit: model.submitFollowUp,
+                onEscapeWhenEmpty: onClose,
+                fontSize: 16,
+                minimumHeight: 44,
+                maximumHeight: 120,
+                verticalTextInset: 12,
+                focusNotification: .kvartzFocusFollowUp
+            )
+            .frame(height: model.followUpEditorHeight)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+        }
+        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(alignment: .trailing) {
+            Text("↩")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.28))
+                .padding(.trailing, 14)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+        }
+    }
+
+    private func submittedQuestion(_ question: String) -> some View {
+        Text(question)
+            .font(.system(size: 16))
+            .foregroundStyle(.white.opacity(0.88))
+            .lineSpacing(3)
+            .textSelection(.enabled)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+            }
+    }
+
+    private func answerText(for index: Int, turn: ConversationTurn) -> String {
+        if index == model.conversation.count - 1, model.phase == .answer {
+            return model.displayedAnswer
+        }
+        return turn.answer
+    }
+
+    private var errorView: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Color.orange)
+            if case .error(let message) = model.phase {
+                Text(message)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .textSelection(.enabled)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func copyAnswer() {

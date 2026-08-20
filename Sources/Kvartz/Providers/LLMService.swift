@@ -3,9 +3,18 @@ import Foundation
 actor LLMService {
     static let shared = LLMService()
 
-    func answer(query: String, provider: ProviderKind, configuration: ProviderConfiguration) async throws -> String {
+    func answer(
+        messages: [ConversationMessage],
+        systemPrompt: String,
+        provider: ProviderKind,
+        configuration: ProviderConfiguration
+    ) async throws -> String {
         if provider == .codex {
-            return try await CodexProvider.shared.answer(query: query, model: configuration.model)
+            return try await CodexProvider.shared.answer(
+                messages: messages,
+                systemPrompt: systemPrompt,
+                model: configuration.model
+            )
         }
         if configuration.apiKey.isEmpty && provider.needsAPIKey {
             throw LLMError.configuration("Add an API key for \(provider.displayName) in Settings.")
@@ -16,30 +25,34 @@ actor LLMService {
 
         switch provider {
         case .openAI:
-            return try await openAI(query, configuration)
+            return try await openAI(messages, systemPrompt, configuration)
         case .anthropic:
-            return try await anthropic(query, configuration)
+            return try await anthropic(messages, systemPrompt, configuration)
         case .gemini:
-            return try await gemini(query, configuration)
+            return try await gemini(messages, systemPrompt, configuration)
         case .qwen, .kimi, .glm:
-            return try await openAICompatible(query, configuration)
+            return try await openAICompatible(messages, systemPrompt, configuration)
         case .openRouter:
-            return try await openRouter(query, configuration)
+            return try await openRouter(messages, systemPrompt, configuration)
         case .ollama:
-            return try await ollama(query, configuration)
+            return try await ollama(messages, systemPrompt, configuration)
         case .codex:
             fatalError("Handled above")
         }
     }
 
-    private func openAI(_ query: String, _ config: ProviderConfiguration) async throws -> String {
+    private func openAI(
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
+        _ config: ProviderConfiguration
+    ) async throws -> String {
         let json = try await post(
             url: endpoint(config.baseURL, "responses"),
             headers: ["Authorization": "Bearer \(config.apiKey)"],
             body: [
                 "model": config.model,
-                "instructions": PromptPolicy.system,
-                "input": query,
+                "instructions": systemPrompt,
+                "input": apiMessages(messages),
                 "max_output_tokens": 320
             ]
         )
@@ -52,15 +65,19 @@ actor LLMService {
         throw LLMError.invalidResponse
     }
 
-    private func anthropic(_ query: String, _ config: ProviderConfiguration) async throws -> String {
+    private func anthropic(
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
+        _ config: ProviderConfiguration
+    ) async throws -> String {
         let json = try await post(
             url: endpoint(config.baseURL, "messages"),
             headers: ["x-api-key": config.apiKey, "anthropic-version": "2023-06-01"],
             body: [
                 "model": config.model,
                 "max_tokens": 320,
-                "system": PromptPolicy.system,
-                "messages": [["role": "user", "content": query]]
+                "system": systemPrompt,
+                "messages": apiMessages(messages)
             ]
         )
         let text = (json["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? ""
@@ -68,13 +85,22 @@ actor LLMService {
         return text
     }
 
-    private func gemini(_ query: String, _ config: ProviderConfiguration) async throws -> String {
+    private func gemini(
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
+        _ config: ProviderConfiguration
+    ) async throws -> String {
         let json = try await post(
             url: endpoint(config.baseURL, "models/\(config.model):generateContent"),
             headers: ["x-goog-api-key": config.apiKey],
             body: [
-                "systemInstruction": ["parts": [["text": PromptPolicy.system]]],
-                "contents": [["role": "user", "parts": [["text": query]]]],
+                "systemInstruction": ["parts": [["text": systemPrompt]]],
+                "contents": messages.map { message in
+                    [
+                        "role": message.role == .assistant ? "model" : "user",
+                        "parts": [["text": message.content]]
+                    ]
+                },
                 "generationConfig": ["maxOutputTokens": 320]
             ]
         )
@@ -85,9 +111,14 @@ actor LLMService {
         return text
     }
 
-    private func openRouter(_ query: String, _ config: ProviderConfiguration) async throws -> String {
+    private func openRouter(
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
+        _ config: ProviderConfiguration
+    ) async throws -> String {
         try await openAICompatible(
-            query,
+            messages,
+            systemPrompt,
             config,
             additionalHeaders: [
                 "HTTP-Referer": "https://github.com/kvartz-app/kvartz",
@@ -97,7 +128,8 @@ actor LLMService {
     }
 
     private func openAICompatible(
-        _ query: String,
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
         _ config: ProviderConfiguration,
         additionalHeaders: [String: String] = [:]
     ) async throws -> String {
@@ -109,10 +141,7 @@ actor LLMService {
             body: [
                 "model": config.model,
                 "max_tokens": 320,
-                "messages": [
-                    ["role": "system", "content": PromptPolicy.system],
-                    ["role": "user", "content": query]
-                ]
+                "messages": [["role": "system", "content": systemPrompt]] + apiMessages(messages)
             ]
         )
         let choices = json["choices"] as? [[String: Any]]
@@ -121,7 +150,11 @@ actor LLMService {
         return text
     }
 
-    private func ollama(_ query: String, _ config: ProviderConfiguration) async throws -> String {
+    private func ollama(
+        _ messages: [ConversationMessage],
+        _ systemPrompt: String,
+        _ config: ProviderConfiguration
+    ) async throws -> String {
         let json = try await post(
             url: endpoint(config.baseURL, "api/chat"),
             headers: [:],
@@ -129,10 +162,7 @@ actor LLMService {
                 "model": config.model,
                 "stream": false,
                 "options": ["num_predict": 320],
-                "messages": [
-                    ["role": "system", "content": PromptPolicy.system],
-                    ["role": "user", "content": query]
-                ]
+                "messages": [["role": "system", "content": systemPrompt]] + apiMessages(messages)
             ]
         )
         let message = json["message"] as? [String: Any]
@@ -143,6 +173,10 @@ actor LLMService {
     private func endpoint(_ baseURL: String, _ path: String) -> URL {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: "\(trimmed)/\(path)")!
+    }
+
+    private func apiMessages(_ messages: [ConversationMessage]) -> [[String: String]] {
+        messages.map { ["role": $0.role.rawValue, "content": $0.content] }
     }
 
     private func post(url: URL, headers: [String: String], body: [String: Any]) async throws -> [String: Any] {

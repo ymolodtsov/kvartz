@@ -229,15 +229,27 @@ struct SettingsView: View {
             .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Response policy")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(PromptPolicy.system)
+                HStack {
+                    Text("Response prompt")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Button("Reset to Default") { model.resetSystemPrompt() }
+                        .font(.system(size: 11))
+                        .disabled(model.systemPrompt == PromptPolicy.defaultSystem)
+                }
+                TextEditor(text: $model.systemPrompt)
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, minHeight: 112, maxHeight: 138)
                     .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                    }
+                Text("Used as system instructions for every request. Changes save automatically.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()

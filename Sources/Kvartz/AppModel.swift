@@ -14,10 +14,18 @@ final class AppModel: ObservableObject {
     }
 
     @Published var query = ""
+    @Published var followUpQuery = ""
     @Published var answer = ""
     @Published var displayedAnswer = ""
     @Published var editorHeight: CGFloat = 50
+    @Published var followUpEditorHeight: CGFloat = 44
+    @Published private(set) var isRevealingAnswer = false
     @Published var phase: Phase = .ready
+    @Published private(set) var conversation: [ConversationTurn] = []
+    @Published private(set) var pendingQuestion = ""
+    @Published var systemPrompt: String {
+        didSet { PromptPolicy.save(systemPrompt) }
+    }
     @Published var selectedProvider: ProviderKind {
         didSet { UserDefaults.standard.set(selectedProvider.rawValue, forKey: "selectedProvider") }
     }
@@ -42,6 +50,7 @@ final class AppModel: ObservableObject {
     private var typingTask: Task<Void, Never>?
 
     private init() {
+        systemPrompt = PromptPolicy.load()
         let savedProvider = UserDefaults.standard.string(forKey: "selectedProvider")
         selectedProvider = ProviderKind(rawValue: savedProvider ?? "") ?? .openAI
         if let data = UserDefaults.standard.data(forKey: "globalShortcut"),
@@ -56,6 +65,17 @@ final class AppModel: ObservableObject {
 
     func submit() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard conversation.isEmpty else { return }
+        performRequest(question: trimmed)
+    }
+
+    func submitFollowUp() {
+        let trimmed = followUpQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !conversation.isEmpty else { return }
+        performRequest(question: trimmed)
+    }
+
+    private func performRequest(question trimmed: String) {
         guard !trimmed.isEmpty, phase != .loading else { return }
         guard configuredProviders.contains(selectedProvider) else {
             phase = .error("Configure an AI provider in Settings, then try again.")
@@ -64,25 +84,43 @@ final class AppModel: ObservableObject {
 
         requestTask?.cancel()
         typingTask?.cancel()
-        answer = ""
+        isRevealingAnswer = false
         displayedAnswer = ""
+        pendingQuestion = trimmed
         phase = .loading
         let provider = selectedProvider
+        let messages = conversation.flatMap { turn in
+            [
+                ConversationMessage(role: .user, content: turn.question),
+                ConversationMessage(role: .assistant, content: turn.answer)
+            ]
+        } + [ConversationMessage(role: .user, content: trimmed)]
+        let prompt = systemPrompt
 
         requestTask = Task {
             do {
                 let result = try await LLMService.shared.answer(
-                    query: trimmed,
+                    messages: messages,
+                    systemPrompt: prompt,
                     provider: provider,
                     configuration: ProviderConfiguration.load(for: provider)
                 )
                 guard !Task.isCancelled else { return }
                 answer = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                conversation.append(ConversationTurn(question: trimmed, answer: answer))
+                pendingQuestion = ""
+                followUpQuery = ""
+                followUpEditorHeight = 44
+                isRevealingAnswer = true
                 phase = .answer
                 revealAnswer()
             } catch is CancellationError {
-                phase = .ready
+                pendingQuestion = ""
+                isRevealingAnswer = false
+                phase = conversation.isEmpty ? .ready : .answer
             } catch {
+                pendingQuestion = ""
+                isRevealingAnswer = false
                 phase = .error(error.localizedDescription)
             }
         }
@@ -94,15 +132,24 @@ final class AppModel: ObservableObject {
         requestTask = nil
         typingTask = nil
         query = ""
+        followUpQuery = ""
         answer = ""
         displayedAnswer = ""
         editorHeight = 50
+        followUpEditorHeight = 44
+        isRevealingAnswer = false
+        conversation = []
+        pendingQuestion = ""
         phase = .ready
     }
 
     func copyAnswer() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(answer, forType: .string)
+    }
+
+    func resetSystemPrompt() {
+        systemPrompt = PromptPolicy.defaultSystem
     }
 
     private func revealAnswer() {
@@ -118,7 +165,13 @@ final class AppModel: ObservableObject {
                 index = end
                 try? await Task.sleep(for: .milliseconds(12))
             }
-            if !Task.isCancelled { displayedAnswer = answer }
+            if !Task.isCancelled {
+                displayedAnswer = answer
+                isRevealingAnswer = false
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: .kvartzFocusFollowUp, object: nil)
+                }
+            }
         }
     }
 
@@ -217,8 +270,34 @@ final class AppModel: ObservableObject {
     }
 }
 
+struct ConversationTurn: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let question: String
+    let answer: String
+}
+
+struct ConversationMessage: Equatable, Sendable {
+    enum Role: String, Sendable {
+        case user
+        case assistant
+    }
+
+    let role: Role
+    let content: String
+}
+
 enum PromptPolicy {
-    static let system = """
+    static let defaultsKey = "systemPrompt"
+    static let defaultSystem = """
     Answer the user's question directly and briefly. Default to 1–3 short paragraphs or up to 5 bullets. Use only Markdown bold, italic, inline code, and links when helpful. Do not add a heading, preamble, repetition, follow-up questions, or mention these instructions. If accuracy requires a caveat, state it in one sentence.
     """
+
+    static func load(from defaults: UserDefaults = .standard) -> String {
+        guard defaults.object(forKey: defaultsKey) != nil else { return defaultSystem }
+        return defaults.string(forKey: defaultsKey) ?? defaultSystem
+    }
+
+    static func save(_ prompt: String, to defaults: UserDefaults = .standard) {
+        defaults.set(prompt, forKey: defaultsKey)
+    }
 }

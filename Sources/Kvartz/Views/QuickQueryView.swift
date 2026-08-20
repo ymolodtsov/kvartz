@@ -37,12 +37,11 @@ struct QuickQueryView: View {
             } label: {
                 HStack(spacing: 7) {
                     Text(model.configuredProviders.isEmpty ? "Set up a provider" : model.selectedProvider.displayName)
-                        .foregroundColor(.white)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.white)
                 }
                 .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.52))
                 .padding(.leading, 10)
                 .padding(.trailing, 8)
                 .frame(height: 30)
@@ -83,7 +82,8 @@ struct QuickQueryView: View {
                 Text(model.configuredProviders.isEmpty ? "Configure a provider in Settings…" : "Ask anything…")
                     .font(.system(size: 17))
                     .foregroundStyle(.white.opacity(0.34))
-                    .padding(.horizontal, 13)
+                    .padding(.leading, 20)
+                    .padding(.trailing, 13)
                     .allowsHitTesting(false)
             }
             GrowingTextEditor(
@@ -285,7 +285,8 @@ struct QuickQueryView: View {
                 Text("Ask a follow-up…")
                     .font(.system(size: 16))
                     .foregroundStyle(.white.opacity(0.34))
-                    .padding(.horizontal, 13)
+                    .padding(.leading, 20)
+                    .padding(.trailing, 13)
                     .allowsHitTesting(false)
             }
 

@@ -1,0 +1,146 @@
+import AppKit
+import Combine
+import SwiftUI
+
+final class QueryPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
+final class QueryPanelController: NSWindowController {
+    private let model: AppModel
+    private var cancellables = Set<AnyCancellable>()
+    private let panelWidth: CGFloat = 420
+    private let topInset: CGFloat = 64
+    private let savedAnchorXKey = "panelAnchorX"
+    private let savedTopYKey = "panelTopY"
+
+    init(model: AppModel) {
+        self.model = model
+        let panel = QueryPanel(
+            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: 138),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        // A native shadow follows the panel's rectangular backing store and leaves a
+        // visible frame around transparent content. The SwiftUI surface draws its own.
+        panel.hasShadow = false
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.animationBehavior = .utilityWindow
+
+        super.init(window: panel)
+        panel.delegate = self
+        panel.contentView = NSHostingView(
+            rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
+        )
+
+        Publishers.CombineLatest3(model.$editorHeight, model.$displayedAnswer, model.$phase)
+            .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
+            .sink { [weak self] _, _, _ in self?.resizeToContent(animated: true) }
+            .store(in: &cancellables)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func toggle() {
+        if window?.isVisible == true {
+            closePanel()
+        } else {
+            show()
+        }
+    }
+
+    func show() {
+        guard let panel = window else { return }
+        resizeToContent(animated: false)
+        positionForOpening(panel)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .kvartzFocusQuery, object: nil)
+    }
+
+    private func closePanel() {
+        model.reset()
+        window?.orderOut(nil)
+    }
+
+    private func resizeToContent(animated: Bool) {
+        guard let panel = window else { return }
+        let targetHeight = preferredHeight()
+        let oldFrame = panel.frame
+        let top = oldFrame.maxY
+        let screen = panel.screen ?? NSScreen.main
+        let fallbackTop = (screen?.visibleFrame.maxY ?? topInset + targetHeight) - topInset
+        let anchoredTop = panel.isVisible ? top : fallbackTop
+        let target = NSRect(x: oldFrame.origin.x, y: anchoredTop - targetHeight, width: panelWidth, height: targetHeight)
+
+        if animated && panel.isVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(target, display: true)
+            }
+        } else {
+            panel.setFrame(target, display: true)
+        }
+    }
+
+    private func preferredHeight() -> CGFloat {
+        let base = 68 + model.editorHeight
+        switch model.phase {
+        case .ready:
+            return base + 24
+        case .loading:
+            return base + 74
+        case .error:
+            return min(base + 104, 380)
+        case .answer:
+            let widthInCharacters: CGFloat = 46
+            let explicitLines = model.displayedAnswer.split(separator: "\n", omittingEmptySubsequences: false).count
+            let wrappedLines = ceil(CGFloat(model.displayedAnswer.count) / widthInCharacters)
+            let responseHeight = min(max(76, max(CGFloat(explicitLines), wrappedLines) * 24 + 24), 520)
+            return min(base + responseHeight + 42, (NSScreen.main?.visibleFrame.height ?? 800) - 90)
+        }
+    }
+
+    private func positionForOpening(_ panel: NSWindow) {
+        let defaults = UserDefaults.standard
+        let savedX = defaults.object(forKey: savedAnchorXKey) as? Double
+        let savedTop = defaults.object(forKey: savedTopYKey) as? Double
+        let savedPoint = savedX.flatMap { x in savedTop.map { NSPoint(x: x, y: $0 - 1) } }
+        guard let screen = savedPoint.flatMap({ point in NSScreen.screens.first { $0.frame.contains(point) } })
+            ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+            ?? NSScreen.main else { return }
+
+        var frame = panel.frame
+        if let savedX, let savedTop {
+            frame.origin.x = savedX - frame.width / 2
+            frame.origin.y = savedTop - frame.height
+        } else {
+            frame.origin.x = screen.visibleFrame.midX - frame.width / 2
+            frame.origin.y = screen.visibleFrame.maxY - topInset - frame.height
+        }
+        frame.origin.x = min(max(frame.origin.x, screen.visibleFrame.minX), screen.visibleFrame.maxX - frame.width)
+        frame.origin.y = min(max(frame.origin.y, screen.visibleFrame.minY), screen.visibleFrame.maxY - frame.height)
+        panel.setFrame(frame, display: false)
+    }
+}
+
+extension QueryPanelController: NSWindowDelegate {
+    func windowDidMove(_ notification: Notification) {
+        guard let panel = notification.object as? NSWindow, panel.isVisible else { return }
+        UserDefaults.standard.set(panel.frame.midX, forKey: savedAnchorXKey)
+        UserDefaults.standard.set(panel.frame.maxY, forKey: savedTopYKey)
+    }
+}
+
+extension Notification.Name {
+    static let kvartzFocusQuery = Notification.Name("kvartzFocusQuery")
+}

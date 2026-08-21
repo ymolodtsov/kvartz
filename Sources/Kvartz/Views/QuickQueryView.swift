@@ -199,16 +199,7 @@ struct QuickQueryView: View {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                             ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
                                 Section {
-                                    Text(markdown: answerText(for: index, turn: turn))
-                                        .font(.system(size: 16, weight: .regular))
-                                        .foregroundStyle(.white.opacity(0.93))
-                                        .lineSpacing(4)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .frame(
-                                            minHeight: minimumAnswerHeight(for: index, viewportHeight: viewport.size.height),
-                                            alignment: .topLeading
-                                        )
+                                    renderedAnswer(for: index, turn: turn)
                                         .padding(.top, 14)
                                         .padding(.bottom, answerBottomPadding(for: index))
                                 } header: {
@@ -256,6 +247,13 @@ struct QuickQueryView: View {
                             withAnimation(sendAnimation) {
                                 proxy.scrollTo(anchor, anchor: .top)
                             }
+                        }
+                    }
+                    .transaction { transaction in
+                        // SwiftUI otherwise keeps an edge anchored while the streaming
+                        // answer changes size, which overrides an in-progress user scroll.
+                        if #available(macOS 15.0, *) {
+                            transaction.scrollContentOffsetAdjustmentBehavior = .disabled
                         }
                     }
                 }
@@ -401,11 +399,6 @@ struct QuickQueryView: View {
         }
     }
 
-    private func minimumAnswerHeight(for index: Int, viewportHeight: CGFloat) -> CGFloat? {
-        guard model.isRevealingAnswer, index == model.conversation.count - 1 else { return nil }
-        return max(44, viewportHeight - 52)
-    }
-
     private func answerBottomPadding(for index: Int) -> CGFloat {
         let isFinalSection = model.pendingQuestion.isEmpty && index == model.conversation.count - 1
         return isFinalSection ? 52 : 14
@@ -436,6 +429,28 @@ struct QuickQueryView: View {
             return model.displayedAnswer
         }
         return turn.answer
+    }
+
+    private func renderedAnswer(for index: Int, turn: ConversationTurn) -> some View {
+        ZStack(alignment: .topLeading) {
+            if index == model.conversation.count - 1, model.isRevealingAnswer {
+                formattedAnswer(turn.answer)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+
+            formattedAnswer(answerText(for: index, turn: turn))
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func formattedAnswer(_ answer: String) -> some View {
+        Text(markdown: answer)
+            .font(.system(size: 16, weight: .regular))
+            .foregroundStyle(.white.opacity(0.93))
+            .lineSpacing(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var errorView: some View {

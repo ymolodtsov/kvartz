@@ -27,7 +27,7 @@ open dist/Kvartz.app
 
 The script creates an ad-hoc signed app at `dist/Kvartz.app`. For distribution, replace the ad-hoc signature with your Developer ID and notarize the bundle.
 
-To create a universal ZIP for Apple Silicon and Intel Macs:
+To create a ZIP for Apple Silicon Macs:
 
 ```sh
 ./scripts/build-public.sh

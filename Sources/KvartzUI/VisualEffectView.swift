@@ -60,8 +60,8 @@ struct GlassSurface: ViewModifier {
     private var nativeSurfaceFill: some View {
         LinearGradient(
             stops: [
-                .init(color: Color.black.opacity(0.30), location: 0.00),
-                .init(color: Color.black.opacity(0.60), location: 0.33),
+                .init(color: Color.black.opacity(0.50), location: 0.00),
+                .init(color: Color.black.opacity(0.60), location: 0.10),
                 .init(color: Color.black.opacity(1), location: 1.00)
             ],
             startPoint: .top,

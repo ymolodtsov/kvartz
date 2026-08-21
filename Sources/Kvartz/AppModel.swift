@@ -2,6 +2,38 @@ import AppKit
 import Foundation
 import ServiceManagement
 
+enum PanelOpeningPosition: String, CaseIterable, Identifiable {
+    case nearCursor
+    case lastPosition
+
+    static let defaultsKey = "panelOpeningPosition"
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .nearCursor: "Near Cursor"
+        case .lastPosition: "Last Position"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .nearCursor: "Open beside the pointer on its current display."
+        case .lastPosition: "Reopen where the panel was last shown or moved."
+        }
+    }
+
+    static func load(from defaults: UserDefaults = .standard) -> PanelOpeningPosition {
+        guard let rawValue = defaults.string(forKey: defaultsKey) else { return .nearCursor }
+        return PanelOpeningPosition(rawValue: rawValue) ?? .nearCursor
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
@@ -29,13 +61,14 @@ final class AppModel: ObservableObject {
     @Published var selectedProvider: ProviderKind {
         didSet { UserDefaults.standard.set(selectedProvider.rawValue, forKey: "selectedProvider") }
     }
-    @Published var shortcut: KeyboardShortcut {
+    @Published var activationShortcut: ActivationShortcut {
         didSet {
-            if let data = try? JSONEncoder().encode(shortcut) {
-                UserDefaults.standard.set(data, forKey: "globalShortcut")
-                NotificationCenter.default.post(name: .kvartzShortcutChanged, object: nil)
-            }
+            ActivationShortcutStorage.save(activationShortcut)
+            NotificationCenter.default.post(name: .kvartzShortcutChanged, object: nil)
         }
+    }
+    @Published var panelOpeningPosition: PanelOpeningPosition {
+        didSet { panelOpeningPosition.save() }
     }
     @Published var codexStatus = "Not connected"
     @Published var isConnectingCodex = false
@@ -53,12 +86,8 @@ final class AppModel: ObservableObject {
         systemPrompt = PromptPolicy.load()
         let savedProvider = UserDefaults.standard.string(forKey: "selectedProvider")
         selectedProvider = ProviderKind(rawValue: savedProvider ?? "") ?? .openAI
-        if let data = UserDefaults.standard.data(forKey: "globalShortcut"),
-           let saved = try? JSONDecoder().decode(KeyboardShortcut.self, from: data) {
-            shortcut = saved
-        } else {
-            shortcut = .default
-        }
+        activationShortcut = ActivationShortcutStorage.load()
+        panelOpeningPosition = PanelOpeningPosition.load()
         refreshConfiguredProviders()
         refreshLaunchAtLoginStatus()
     }
@@ -267,6 +296,13 @@ final class AppModel: ObservableObject {
 
     func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 }
 

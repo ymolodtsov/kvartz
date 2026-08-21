@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import XCTest
 @testable import Kvartz
 
@@ -31,6 +32,78 @@ final class KvartzTests: XCTestCase {
         XCTAssertEqual(resized.minY, 24)
     }
 
+    func testPanelGrowthAboveCursorKeepsItsBottomEdgeFixed() {
+        let current = NSRect(x: 120, y: 200, width: 420, height: 142)
+        let resized = panelFrameKeepingBottom(
+            currentFrame: current,
+            preferredHeight: 260,
+            width: 420,
+            bottomY: current.minY,
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(resized.minY, current.minY)
+        XCTAssertEqual(resized.maxY, current.minY + 260)
+    }
+
+    func testPanelOpensBelowCursorWhenThereIsRoom() {
+        let position = panelPositionNearCursor(
+            cursor: NSPoint(x: 720, y: 600),
+            panelSize: NSSize(width: 420, height: 140),
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(position.anchoredEdge, .top)
+        XCTAssertEqual(position.frame.midX, 720)
+        XCTAssertEqual(position.frame.maxY, 588)
+    }
+
+    func testPanelOpensAboveCursorNearScreenBottom() {
+        let position = panelPositionNearCursor(
+            cursor: NSPoint(x: 720, y: 60),
+            panelSize: NSSize(width: 420, height: 140),
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(position.anchoredEdge, .bottom)
+        XCTAssertEqual(position.frame.minY, 72)
+        XCTAssertEqual(position.frame.height, 140)
+    }
+
+    func testCursorPositionClampsPanelToVisibleScreen() {
+        let position = panelPositionNearCursor(
+            cursor: NSPoint(x: 10, y: 500),
+            panelSize: NSSize(width: 420, height: 140),
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(position.frame.minX, 0)
+        XCTAssertTrue(NSContainsRect(NSRect(x: 0, y: 24, width: 1_440, height: 876), position.frame))
+    }
+
+    func testSavedPanelPositionIsRestoredAndClampedToVisibleScreen() {
+        let frame = panelFrameAtSavedPosition(
+            anchorX: 1_400,
+            topY: 850,
+            panelSize: NSSize(width: 420, height: 180),
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(frame.maxX, 1_440)
+        XCTAssertEqual(frame.maxY, 850)
+        XCTAssertTrue(NSContainsRect(NSRect(x: 0, y: 24, width: 1_440, height: 876), frame))
+    }
+
+    func testPanelOpeningPositionDefaultsToCursorAndPersists() throws {
+        let suiteName = "KvartzTests.PanelOpeningPosition.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(PanelOpeningPosition.load(from: defaults), .nearCursor)
+        PanelOpeningPosition.lastPosition.save(to: defaults)
+        XCTAssertEqual(PanelOpeningPosition.load(from: defaults), .lastPosition)
+    }
+
     func testPromptPolicyKeepsAnswersShortAndAllowsFormatting() {
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("briefly"))
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("Markdown"))
@@ -49,6 +122,80 @@ final class KvartzTests: XCTestCase {
 
     func testDefaultShortcutIsReadable() {
         XCTAssertEqual(KeyboardShortcut.default.displayString, "⌥Space")
+    }
+
+    func testActivationShortcutMigratesLegacyKeyboardShortcut() throws {
+        let suiteName = "KvartzTests.ActivationShortcut.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacy = KeyboardShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey))
+        defaults.set(try JSONEncoder().encode(legacy), forKey: ActivationShortcutStorage.legacyDefaultsKey)
+
+        XCTAssertEqual(
+            ActivationShortcutStorage.load(from: defaults),
+            ActivationShortcut(mode: .keyboard, keyboardShortcut: legacy)
+        )
+    }
+
+    func testDoubleModifierTapActivatesAfterTwoCleanTaps() {
+        var recognizer = ModifierGestureRecognizer(gesture: .doubleTap(.command))
+
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: true, timestamp: 1.00))
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: false, timestamp: 1.08))
+        XCTAssertFalse(recognizer.flagsChanged(key: .rightCommand, modifierIsActive: true, timestamp: 1.24))
+        XCTAssertTrue(recognizer.flagsChanged(key: .rightCommand, modifierIsActive: false, timestamp: 1.31))
+    }
+
+    func testDoubleModifierTapDoesNotActivateAfterTypingAKey() {
+        var recognizer = ModifierGestureRecognizer(gesture: .doubleTap(.option))
+
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftOption, modifierIsActive: true, timestamp: 1.00))
+        recognizer.interrupt()
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftOption, modifierIsActive: false, timestamp: 1.10))
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftOption, modifierIsActive: true, timestamp: 1.20))
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftOption, modifierIsActive: false, timestamp: 1.28))
+    }
+
+    func testBothShiftKeysActivateOnceUntilOneSideIsReleased() {
+        var recognizer = ModifierGestureRecognizer(gesture: .bothSides(.shift))
+
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftShift, modifierIsActive: true, timestamp: 1.00))
+        XCTAssertTrue(recognizer.flagsChanged(key: .rightShift, modifierIsActive: true, timestamp: 1.05))
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftControl, modifierIsActive: true, timestamp: 1.10))
+        XCTAssertFalse(recognizer.flagsChanged(key: .leftControl, modifierIsActive: false, timestamp: 1.15))
+        XCTAssertFalse(recognizer.flagsChanged(key: .rightShift, modifierIsActive: true, timestamp: 1.20))
+        XCTAssertTrue(recognizer.flagsChanged(key: .rightShift, modifierIsActive: true, timestamp: 1.25))
+    }
+
+    func testShortcutCaptureLearnsDoubleModifierTap() {
+        var recognizer = ShortcutCaptureRecognizer()
+
+        XCTAssertNil(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: true, timestamp: 1.00))
+        XCTAssertNil(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: false, timestamp: 1.07))
+        XCTAssertNil(recognizer.flagsChanged(key: .rightCommand, modifierIsActive: true, timestamp: 1.20))
+        XCTAssertEqual(
+            recognizer.flagsChanged(key: .rightCommand, modifierIsActive: false, timestamp: 1.27),
+            .doubleCommand
+        )
+    }
+
+    func testShortcutCaptureLearnsBothShiftKeys() {
+        var recognizer = ShortcutCaptureRecognizer()
+
+        XCTAssertNil(recognizer.flagsChanged(key: .leftShift, modifierIsActive: true, timestamp: 1.00))
+        XCTAssertEqual(
+            recognizer.flagsChanged(key: .rightShift, modifierIsActive: true, timestamp: 1.08),
+            .bothShiftKeys
+        )
+    }
+
+    func testShortcutCaptureRejectsMixedModifierTaps() {
+        var recognizer = ShortcutCaptureRecognizer()
+
+        XCTAssertNil(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: true, timestamp: 1.00))
+        XCTAssertNil(recognizer.flagsChanged(key: .leftCommand, modifierIsActive: false, timestamp: 1.07))
+        XCTAssertNil(recognizer.flagsChanged(key: .leftOption, modifierIsActive: true, timestamp: 1.20))
+        XCTAssertNil(recognizer.flagsChanged(key: .leftOption, modifierIsActive: false, timestamp: 1.27))
     }
 
     func testProviderDefaultsAreComplete() {

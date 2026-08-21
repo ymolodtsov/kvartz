@@ -15,6 +15,7 @@ swift build -c release --arch arm64 --scratch-path "$arm_scratch"
 
 arm_binary_dir="$(swift build -c release --arch arm64 --scratch-path "$arm_scratch" --show-bin-path)"
 
+rm -rf "$app_dir"
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 cp "$arm_binary_dir/Kvartz" "$contents_dir/MacOS/Kvartz"
 cp "$project_dir/Info.plist" "$contents_dir/Info.plist"

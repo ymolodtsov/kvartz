@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         panelController = QueryPanelController(model: .shared)
-        hotKeyManager = HotKeyManager(shortcut: AppModel.shared.shortcut) { [weak self] in
+        hotKeyManager = HotKeyManager(shortcut: AppModel.shared.activationShortcut) { [weak self] in
             Task { @MainActor in self?.panelController?.toggle() }
         }
         configureMenuBarItem()
@@ -35,7 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.hotKeyManager?.register(AppModel.shared.shortcut) }
+            Task { @MainActor in self?.hotKeyManager?.register(AppModel.shared.activationShortcut) }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .kvartzShortcutRecordingChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let isRecording = notification.object as? Bool else { return }
+            Task { @MainActor in self?.hotKeyManager?.setSuspended(isRecording) }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .kvartzOpenSettings,
@@ -106,5 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let kvartzShortcutChanged = Notification.Name("kvartzShortcutChanged")
+    static let kvartzShortcutRecordingChanged = Notification.Name("kvartzShortcutRecordingChanged")
     static let kvartzOpenSettings = Notification.Name("kvartzOpenSettings")
 }

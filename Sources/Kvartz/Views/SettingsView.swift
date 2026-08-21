@@ -177,85 +177,126 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Global shortcut")
-                    .font(.system(size: 17, weight: .semibold))
-                Text("Press the shortcut from any app to bring Kvartz forward.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text("Shortcut")
-                Spacer()
-                ShortcutRecorder(shortcut: $model.shortcut)
-                    .frame(width: 150, height: 34)
-            }
-            .padding(14)
-            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 14) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Launch on login")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Start Kvartz automatically when you sign in to this Mac.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Toggle("", isOn: Binding(
-                        get: { model.launchAtLoginEnabled },
-                        set: { model.setLaunchAtLogin($0) }
-                    ))
-                    .labelsHidden()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Global shortcut")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("Press the shortcut from any app to bring Kvartz forward.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
 
-                if !model.launchAtLoginMessage.isEmpty {
-                    HStack(spacing: 8) {
-                        Text(model.launchAtLoginMessage)
-                            .font(.system(size: 11))
-                            .foregroundStyle(model.launchAtLoginNeedsApproval ? Color.secondary : Color.red)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Shortcut")
                         Spacer()
-                        if model.launchAtLoginNeedsApproval {
-                            Button("Open Login Items") { model.openLoginItemsSettings() }
-                                .font(.system(size: 11))
+                        ShortcutRecorder(shortcut: $model.activationShortcut)
+                            .frame(width: 180, height: 34)
+                    }
+
+                    Text("Click the field, then press a key combination, double-tap a modifier, or hold its left and right keys together.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+
+                    if model.activationShortcut.mode != .keyboard {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text("Modifier-only triggers require Input Monitoring permission. Relaunch Kvartz after granting it.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Open Privacy Settings") { model.openInputMonitoringSettings() }
+                                .font(.system(size: 10))
                         }
                     }
                 }
-            }
-            .padding(14)
-            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(14)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Response prompt")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Button("Reset to Default") { model.resetSystemPrompt() }
-                        .font(.system(size: 11))
-                        .disabled(model.systemPrompt == PromptPolicy.defaultSystem)
-                }
-                TextEditor(text: $model.systemPrompt)
-                    .font(.system(size: 12))
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, minHeight: 112, maxHeight: 138)
-                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 16) {
+                        Text("Open panel")
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        Picker("Open panel", selection: $model.panelOpeningPosition) {
+                            ForEach(PanelOpeningPosition.allCases) { position in
+                                Text(position.displayName).tag(position)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 260)
                     }
-                Text("Used as system instructions for every request. Changes save automatically.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
 
-            Spacer()
-            Text("Kvartz stores provider keys in Keychain. Model and URL choices stay in local preferences.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                    Text(model.panelOpeningPosition.helpText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 14) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Launch on login")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Start Kvartz automatically when you sign in to this Mac.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { model.launchAtLoginEnabled },
+                            set: { model.setLaunchAtLogin($0) }
+                        ))
+                        .labelsHidden()
+                    }
+
+                    if !model.launchAtLoginMessage.isEmpty {
+                        HStack(spacing: 8) {
+                            Text(model.launchAtLoginMessage)
+                                .font(.system(size: 11))
+                                .foregroundStyle(model.launchAtLoginNeedsApproval ? Color.secondary : Color.red)
+                            Spacer()
+                            if model.launchAtLoginNeedsApproval {
+                                Button("Open Login Items") { model.openLoginItemsSettings() }
+                                    .font(.system(size: 11))
+                            }
+                        }
+                    }
+                }
+                .padding(14)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Response prompt")
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        Button("Reset to Default") { model.resetSystemPrompt() }
+                            .font(.system(size: 11))
+                            .disabled(model.systemPrompt == PromptPolicy.defaultSystem)
+                    }
+                    TextEditor(text: $model.systemPrompt)
+                        .font(.system(size: 12))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, minHeight: 112, maxHeight: 138)
+                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                        }
+                    Text("Used as system instructions for every request. Changes save automatically.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Kvartz stores provider keys in Keychain. Model and URL choices stay in local preferences.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .padding(.top, 12)
     }
@@ -411,7 +452,7 @@ private struct ModelSelector: View {
 }
 
 struct ShortcutRecorder: NSViewRepresentable {
-    @Binding var shortcut: KeyboardShortcut
+    @Binding var shortcut: ActivationShortcut
 
     func makeNSView(context: Context) -> ShortcutRecorderView {
         let view = ShortcutRecorderView()
@@ -427,36 +468,82 @@ struct ShortcutRecorder: NSViewRepresentable {
 }
 
 final class ShortcutRecorderView: NSView {
-    var shortcut = KeyboardShortcut.default
-    var onChange: ((KeyboardShortcut) -> Void)?
+    var shortcut = ActivationShortcut.default
+    var onChange: ((ActivationShortcut) -> Void)?
     private var isRecording = false
+    private var captureRecognizer = ShortcutCaptureRecognizer()
 
     override var acceptsFirstResponder: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        isRecording = true
+        beginRecording()
         window?.makeFirstResponder(self)
-        needsDisplay = true
     }
 
     override func keyDown(with event: NSEvent) {
         guard isRecording else { return }
         if event.keyCode == 53 {
-            isRecording = false
+            endRecording()
         } else if let value = KeyboardShortcut.from(event: event) {
-            shortcut = value
-            isRecording = false
-            onChange?(value)
+            captureRecognizer.interrupt()
+            complete(with: ActivationShortcut(mode: .keyboard, keyboardShortcut: value))
         } else {
             NSSound.beep()
         }
         needsDisplay = true
     }
 
+    override func flagsChanged(with event: NSEvent) {
+        guard isRecording,
+              let modifier = PhysicalModifier(rawValue: event.keyCode) else {
+            super.flagsChanged(with: event)
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let modifierIsActive: Bool
+        switch modifier.kind {
+        case .command: modifierIsActive = flags.contains(.command)
+        case .option: modifierIsActive = flags.contains(.option)
+        case .control: modifierIsActive = flags.contains(.control)
+        case .shift: modifierIsActive = flags.contains(.shift)
+        }
+        if let mode = captureRecognizer.flagsChanged(
+            key: modifier,
+            modifierIsActive: modifierIsActive,
+            timestamp: event.timestamp
+        ) {
+            complete(with: ActivationShortcut(mode: mode, keyboardShortcut: shortcut.keyboardShortcut))
+        }
+    }
+
     override func resignFirstResponder() -> Bool {
-        isRecording = false
-        needsDisplay = true
+        endRecording()
         return super.resignFirstResponder()
+    }
+
+    private func beginRecording() {
+        captureRecognizer = ShortcutCaptureRecognizer()
+        guard !isRecording else {
+            needsDisplay = true
+            return
+        }
+        isRecording = true
+        NotificationCenter.default.post(name: .kvartzShortcutRecordingChanged, object: true)
+        needsDisplay = true
+    }
+
+    private func complete(with value: ActivationShortcut) {
+        shortcut = value
+        onChange?(value)
+        endRecording()
+    }
+
+    private func endRecording() {
+        captureRecognizer = ShortcutCaptureRecognizer()
+        guard isRecording else { return }
+        isRecording = false
+        NotificationCenter.default.post(name: .kvartzShortcutRecordingChanged, object: false)
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -468,7 +555,7 @@ final class ShortcutRecorderView: NSView {
         path.lineWidth = 1
         path.stroke()
 
-        let text = isRecording ? "Press shortcut…" : shortcut.displayString
+        let text = isRecording ? "Press or double-tap…" : shortcut.displayString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: isRecording ? NSColor.controlAccentColor : NSColor.labelColor

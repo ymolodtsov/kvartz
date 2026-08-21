@@ -292,9 +292,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Kvartz stores provider keys in Keychain. Model and URL choices stay in local preferences.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                HStack(spacing: 16) {
+                    Text("Kvartz stores provider keys in Keychain. Model and URL choices stay in local preferences.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Button("Quit Kvartz", role: .destructive) {
+                        NSApp.terminate(nil)
+                    }
+                    .frame(minWidth: 104, minHeight: 40)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }

@@ -2,6 +2,8 @@
 
 Kvartz is a small native macOS menu-bar utility for short LLM queries. Press a global shortcut, type a question, and read a compact Markdown response in a floating black-glass panel.
 
+![Kvartz answering a query](Assets/Kvartz-screenshot.png)
+
 ## Included providers
 
 - OpenAI (Responses API)
@@ -16,9 +18,21 @@ Kvartz is a small native macOS menu-bar utility for short LLM queries. Press a g
 
 API keys are stored in macOS Keychain. Provider models, base URLs, and the activation shortcut are configurable.
 
-## Build
+## Install
 
-Requires macOS 14 or later and Xcode 16 or later.
+Kvartz requires macOS 14 or later and an Apple Silicon Mac.
+
+1. Download [`Kvartz-0.1.0-macOS-arm64.zip`](Builds/Kvartz-0.1.0-macOS-arm64.zip).
+2. Unzip it and move `Kvartz.app` to your Applications folder.
+3. Open `Kvartz.app` once. Because this build is not notarized, macOS may block the first launch.
+4. Open **System Settings → Privacy & Security**, scroll to **Security**, then click **Open Anyway** beside Kvartz.
+5. Confirm by clicking **Open**. macOS saves Kvartz as an exception, so future launches work normally.
+
+Only override Gatekeeper for a copy downloaded from this repository. Do not disable Gatekeeper globally. See [Apple's guidance for opening an app from an unidentified developer](https://support.apple.com/102445).
+
+## Build from source
+
+Requires Xcode 16 or later.
 
 ```sh
 ./scripts/build-app.sh

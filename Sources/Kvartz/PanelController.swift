@@ -34,6 +34,7 @@ final class QueryPanelController: NSWindowController {
     private let savedTopYKey = "panelTopY"
     private var resizeAnchorTopY: CGFloat?
     private var isApplyingContentFrame = false
+    private var resizeGeneration = 0
 
     init(model: AppModel) {
         self.model = model
@@ -65,7 +66,7 @@ final class QueryPanelController: NSWindowController {
             model.$followUpEditorHeight.dropFirst().map { _ in () }
         )
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
-            .sink { [weak self] in self?.resizeToContent() }
+            .sink { [weak self] in self?.resizeToContent(animated: true) }
             .store(in: &cancellables)
 
         Publishers.CombineLatest4(
@@ -75,7 +76,7 @@ final class QueryPanelController: NSWindowController {
             model.$isRevealingAnswer
         )
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
-            .sink { [weak self] _, _, _, _ in self?.resizeToContent() }
+            .sink { [weak self] _ in self?.resizeToContent(animated: true) }
             .store(in: &cancellables)
     }
 
@@ -91,7 +92,7 @@ final class QueryPanelController: NSWindowController {
 
     func show() {
         guard let panel = window else { return }
-        resizeToContent()
+        resizeToContent(animated: false)
         positionForOpening(panel)
         resizeAnchorTopY = panel.frame.maxY
         NSApp.activate(ignoringOtherApps: true)
@@ -104,14 +105,15 @@ final class QueryPanelController: NSWindowController {
         window?.orderOut(nil)
     }
 
-    private func resizeToContent() {
+    private func resizeToContent(animated: Bool) {
         guard let panel = window else { return }
         let targetHeight = preferredHeight()
         let oldFrame = panel.frame
         let screen = panel.screen ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: panelWidth, height: 800)
         let fallbackTop = visibleFrame.maxY - topInset
-        let anchoredTop = panel.isVisible ? (resizeAnchorTopY ?? oldFrame.maxY) : fallbackTop
+        let requestedTop = panel.isVisible ? (resizeAnchorTopY ?? oldFrame.maxY) : fallbackTop
+        let anchoredTop = min(requestedTop, visibleFrame.maxY)
         let target = panelFrameKeepingTop(
             currentFrame: oldFrame,
             preferredHeight: targetHeight,
@@ -121,18 +123,44 @@ final class QueryPanelController: NSWindowController {
         )
 
         resizeAnchorTopY = anchoredTop
+        guard !oldFrame.equalTo(target) else { return }
+
+        resizeGeneration += 1
+        let generation = resizeGeneration
         isApplyingContentFrame = true
-        panel.setFrame(target, display: true)
-        isApplyingContentFrame = false
+
+        if animated && panel.isVisible {
+            NSAnimationContext.runAnimationGroup(
+                { context in
+                    context.duration = 0.22
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(target, display: true)
+                },
+                completionHandler: { [weak self] in
+                    Task { @MainActor in
+                        guard let self, generation == self.resizeGeneration else { return }
+                        self.isApplyingContentFrame = false
+                    }
+                }
+            )
+        } else {
+            panel.setFrame(target, display: true)
+            isApplyingContentFrame = false
+        }
     }
 
     private func preferredHeight() -> CGFloat {
-        let base = 68 + model.editorHeight
+        let queryAreaHeight = model.conversation.isEmpty && model.pendingQuestion.isEmpty
+            ? model.editorHeight + QuickQueryLayout.activeEditorVerticalPadding
+            : QuickQueryLayout.submittedQueryHeight
+        // Includes the outer and inner 12pt insets, the 30pt header, and both
+        // 6pt root-stack gaps. The query area's own height is added separately.
+        let base = QuickQueryLayout.rootChromeHeight + queryAreaHeight
         switch model.phase {
         case .ready:
-            return base + 24
+            return base + (model.configuredProviders.isEmpty ? 48 : 0)
         case .loading:
-            if model.conversation.isEmpty { return base + 74 }
+            if model.conversation.isEmpty { return base + 58 }
             return conversationPanelHeight(base: base, additionalChrome: 88)
         case .error:
             if model.conversation.isEmpty { return min(base + 104, 380) }

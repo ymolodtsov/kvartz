@@ -240,17 +240,17 @@ final class QueryPanelController: NSWindowController {
     }
 
     private func preferredHeight() -> CGFloat {
-        let queryAreaHeight = model.conversation.isEmpty && model.pendingQuestion.isEmpty
-            ? model.editorHeight + QuickQueryLayout.activeEditorVerticalPadding
-            : QuickQueryLayout.submittedQueryHeight
-        // Includes the outer and inner 12pt insets, the 30pt header, and both
-        // 6pt root-stack gaps. The query area's own height is added separately.
-        let base = QuickQueryLayout.rootChromeHeight + queryAreaHeight
+        let isShowingInitialEditor = model.conversation.isEmpty && model.pendingQuestion.isEmpty
+        // The initial editor has two root-stack gaps. Once the conversation starts,
+        // user messages live in the scroll view and only one root-stack gap remains.
+        let base = isShowingInitialEditor
+            ? QuickQueryLayout.rootChromeHeight + model.editorHeight + QuickQueryLayout.activeEditorVerticalPadding
+            : QuickQueryLayout.conversationChromeHeight
         switch model.phase {
         case .ready:
             return base + (model.configuredProviders.isEmpty ? 48 : 0)
         case .loading:
-            if model.conversation.isEmpty { return base + 58 }
+            if model.conversation.isEmpty { return base + 104 }
             return conversationPanelHeight(base: base, additionalChrome: 88)
         case .error:
             if model.conversation.isEmpty { return min(base + 104, 380) }

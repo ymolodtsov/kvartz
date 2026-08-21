@@ -2,17 +2,23 @@ import KvartzUI
 import SwiftUI
 
 enum QuickQueryLayout {
-    static let submittedQueryHeight: CGFloat = 40
     static let activeEditorVerticalPadding: CGFloat = 8
     static let rootChromeHeight: CGFloat = 90
+    static let conversationChromeHeight: CGFloat = 84
 }
 
 struct QuickQueryView: View {
+    private enum SendTransition {
+        static let initial = "initial-user-message"
+        static let followUp = "follow-up-user-message"
+    }
+
     @ObservedObject var model: AppModel
     let onClose: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var sendTransitionNamespace
     @State private var didCopy = false
     @State private var copyConfirmationGeneration = 0
-    @State private var isAnswerScrolled = false
 
     var body: some View {
         VStack(spacing: 6) {
@@ -86,10 +92,14 @@ struct QuickQueryView: View {
 
     @ViewBuilder
     private var editor: some View {
-        if isQuerySubmitted {
-            submittedQuery
-        } else {
+        if !isQuerySubmitted {
             queryEditor
+                .matchedGeometryEffect(
+                    id: SendTransition.initial,
+                    in: sendTransitionNamespace,
+                    properties: .frame,
+                    isSource: true
+                )
         }
     }
 
@@ -106,7 +116,7 @@ struct QuickQueryView: View {
             GrowingTextEditor(
                 text: $model.query,
                 height: $model.editorHeight,
-                onSubmit: model.submit,
+                onSubmit: submitInitialQuery,
                 onEscapeWhenEmpty: onClose,
                 isEnabled: !model.configuredProviders.isEmpty && model.conversation.isEmpty && model.phase != .loading
             )
@@ -129,33 +139,8 @@ struct QuickQueryView: View {
         }
     }
 
-    private var submittedQuery: some View {
-        Text(compactQuery)
-            .font(.system(size: 14, weight: .regular))
-            .foregroundStyle(.white.opacity(0.78))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .frame(height: QuickQueryLayout.submittedQueryHeight)
-            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
-            }
-            .help(model.query)
-            .accessibilityLabel("Sent message")
-            .accessibilityValue(model.query)
-    }
-
     private var isQuerySubmitted: Bool {
         !model.pendingQuestion.isEmpty || !model.conversation.isEmpty
-    }
-
-    private var compactQuery: String {
-        model.query
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
     }
 
     @ViewBuilder
@@ -192,14 +177,8 @@ struct QuickQueryView: View {
                 .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         case .loading:
-            if model.conversation.isEmpty {
-                ProcessingView()
-                    .frame(height: 58)
-                    .transition(.opacity)
-            } else {
-                answerView
-                    .transition(.opacity)
-            }
+            answerView
+                .transition(.opacity)
         case .answer:
             answerView
                 .transition(.opacity)
@@ -214,122 +193,113 @@ struct QuickQueryView: View {
 
     private var answerView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: AnswerScrollOffsetKey.self,
-                                value: geometry.frame(in: .named("answer-scroll")).minY
-                            )
-                        }
-                        .frame(height: 0)
-
-                        ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
-                            if index > 0 {
-                                submittedQuestion(turn.question)
+            GeometryReader { viewport in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
+                                Section {
+                                    Text(markdown: answerText(for: index, turn: turn))
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(.white.opacity(0.93))
+                                        .lineSpacing(4)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .frame(
+                                            minHeight: minimumAnswerHeight(for: index, viewportHeight: viewport.size.height),
+                                            alignment: .topLeading
+                                        )
+                                        .padding(.top, 14)
+                                        .padding(.bottom, answerBottomPadding(for: index))
+                                } header: {
+                                    userMessageHeader(turn.question, index: index, isPending: false)
+                                }
                             }
 
-                            Text(markdown: answerText(for: index, turn: turn))
-                                .font(.system(size: 16, weight: .regular))
-                                .foregroundStyle(.white.opacity(0.93))
-                                .lineSpacing(4)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if !model.pendingQuestion.isEmpty {
+                                Section {
+                                    ProcessingView()
+                                        .frame(height: 44)
+                                        .frame(
+                                            minHeight: max(44, viewport.size.height - 52),
+                                            alignment: .top
+                                        )
+                                        .padding(.top, 4)
+                                        .padding(.bottom, 52)
+                                } header: {
+                                    userMessageHeader(
+                                        model.pendingQuestion,
+                                        index: model.conversation.count,
+                                        isPending: true
+                                    )
+                                }
+                            }
                         }
-                        if !model.pendingQuestion.isEmpty {
-                            submittedQuestion(model.pendingQuestion)
-                            ProcessingView()
-                                .frame(height: 44)
-                        }
-
-                        Color.clear
-                            .frame(height: 52)
-                            .id("conversation-bottom")
+                        .padding(.horizontal, 3)
                     }
-                    .padding(.horizontal, 3)
-                }
-                .coordinateSpace(name: "answer-scroll")
-                .mask {
-                    VStack(spacing: 0) {
-                        LinearGradient(
-                            colors: [.white.opacity(isAnswerScrolled ? 0 : 1), .white],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 28)
-                        .animation(.easeOut(duration: 0.12), value: isAnswerScrolled)
+                    .mask {
+                        VStack(spacing: 0) {
+                            Color.white
 
-                        Color.white
-
-                        LinearGradient(
-                            colors: [.white, .clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 28)
-                    }
-                }
-                .onPreferenceChange(AnswerScrollOffsetKey.self) { offset in
-                    isAnswerScrolled = offset < -1
-                }
-                .onChange(of: model.pendingQuestion) { _, question in
-                    guard !question.isEmpty else { return }
-                    DispatchQueue.main.async {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                            LinearGradient(
+                                colors: [.white, .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 28)
                         }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    .onChange(of: model.pendingQuestion) { _, question in
+                        guard !question.isEmpty else { return }
+                        let anchor = userMessageAnchor(index: model.conversation.count)
+                        DispatchQueue.main.async {
+                            withAnimation(sendAnimation) {
+                                proxy.scrollTo(anchor, anchor: .top)
+                            }
+                        }
                     }
-                }
-                .onChange(of: model.displayedAnswer) { _, _ in
-                    guard model.conversation.count > 1 else { return }
-                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
-                }
-                .onDisappear {
-                    isAnswerScrolled = false
                 }
             }
             .scrollIndicators(.hidden)
 
-            HStack(spacing: 10) {
-                Text("\(model.answer.count) characters")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.27))
-                    .monospacedDigit()
-                Spacer()
-                Button {
-                    copyAnswer()
-                } label: {
-                    HStack(spacing: 7) {
-                        ZStack {
-                            Image(systemName: "doc.on.doc")
-                                .opacity(didCopy ? 0 : 1)
-                                .scaleEffect(didCopy ? 0.25 : 1)
-                                .blur(radius: didCopy ? 4 : 0)
-                            Image(systemName: "checkmark")
-                                .opacity(didCopy ? 1 : 0)
-                                .scaleEffect(didCopy ? 1 : 0.25)
-                                .blur(radius: didCopy ? 0 : 4)
-                        }
-                        .frame(width: 14, height: 14)
+            if !model.conversation.isEmpty {
+                HStack(spacing: 10) {
+                    Text("\(model.answer.count) characters")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.27))
+                        .monospacedDigit()
+                    Spacer()
+                    Button {
+                        copyAnswer()
+                    } label: {
+                        HStack(spacing: 7) {
+                            ZStack {
+                                Image(systemName: "doc.on.doc")
+                                    .opacity(didCopy ? 0 : 1)
+                                    .scaleEffect(didCopy ? 0.25 : 1)
+                                    .blur(radius: didCopy ? 4 : 0)
+                                Image(systemName: "checkmark")
+                                    .opacity(didCopy ? 1 : 0)
+                                    .scaleEffect(didCopy ? 1 : 0.25)
+                                    .blur(radius: didCopy ? 0 : 4)
+                            }
+                            .frame(width: 14, height: 14)
 
-                        Text(didCopy ? "Copied" : "Copy")
+                            Text(didCopy ? "Copied" : "Copy")
+                        }
+                        .frame(minWidth: 82, minHeight: 40, alignment: .trailing)
+                        .contentShape(Rectangle())
                     }
-                    .frame(minWidth: 82, minHeight: 40, alignment: .trailing)
-                    .contentShape(Rectangle())
+                    .buttonStyle(CopyButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(
+                        didCopy
+                            ? Color(red: 0.55, green: 0.92, blue: 0.68)
+                            : .white.opacity(0.55)
+                    )
+                    .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.22), value: didCopy)
+                    .help(didCopy ? "Copied to clipboard" : "Copy answer")
                 }
-                .buttonStyle(CopyButtonStyle())
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(
-                    didCopy
-                        ? Color(red: 0.55, green: 0.92, blue: 0.68)
-                        : .white.opacity(0.55)
-                )
-                .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.22), value: didCopy)
-                .help(didCopy ? "Copied to clipboard" : "Copy answer")
             }
 
             if case .error = model.phase {
@@ -357,7 +327,7 @@ struct QuickQueryView: View {
             GrowingTextEditor(
                 text: $model.followUpQuery,
                 height: $model.followUpEditorHeight,
-                onSubmit: model.submitFollowUp,
+                onSubmit: submitFollowUpQuery,
                 onEscapeWhenEmpty: onClose,
                 fontSize: 16,
                 minimumHeight: 44,
@@ -380,6 +350,12 @@ struct QuickQueryView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.07), lineWidth: 1)
         }
+        .matchedGeometryEffect(
+            id: SendTransition.followUp,
+            in: sendTransitionNamespace,
+            properties: .frame,
+            isSource: true
+        )
     }
 
     private func submittedQuestion(_ question: String) -> some View {
@@ -391,11 +367,68 @@ struct QuickQueryView: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(white: 0.12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.white.opacity(0.045))
+                    }
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(Color.white.opacity(0.07), lineWidth: 1)
             }
+            .accessibilityLabel("Sent message")
+            .accessibilityValue(question)
+    }
+
+    @ViewBuilder
+    private func userMessageHeader(_ question: String, index: Int, isPending: Bool) -> some View {
+        let message = submittedQuestion(question)
+            .id(userMessageAnchor(index: index))
+            .zIndex(1)
+
+        if isPending {
+            message.matchedGeometryEffect(
+                id: index == 0 ? SendTransition.initial : SendTransition.followUp,
+                in: sendTransitionNamespace,
+                properties: .frame,
+                isSource: false
+            )
+        } else {
+            message
+        }
+    }
+
+    private func minimumAnswerHeight(for index: Int, viewportHeight: CGFloat) -> CGFloat? {
+        guard model.isRevealingAnswer, index == model.conversation.count - 1 else { return nil }
+        return max(44, viewportHeight - 52)
+    }
+
+    private func answerBottomPadding(for index: Int) -> CGFloat {
+        let isFinalSection = model.pendingQuestion.isEmpty && index == model.conversation.count - 1
+        return isFinalSection ? 52 : 14
+    }
+
+    private func userMessageAnchor(index: Int) -> String {
+        "user-message-\(index)"
+    }
+
+    private var sendAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.12) : .smooth(duration: 0.32)
+    }
+
+    private func submitInitialQuery() {
+        withAnimation(sendAnimation) {
+            model.submit()
+        }
+    }
+
+    private func submitFollowUpQuery() {
+        withAnimation(sendAnimation) {
+            model.submitFollowUp()
+        }
     }
 
     private func answerText(for index: Int, turn: ConversationTurn) -> String {
@@ -493,14 +526,6 @@ private struct GlassIconButtonStyle: ButtonStyle {
             .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.001), in: Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-private struct AnswerScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

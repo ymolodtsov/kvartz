@@ -213,6 +213,9 @@ struct QuickQueryView: View {
                                 proxy.scrollTo("conversation-bottom", anchor: .bottom)
                             }
                         }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        }
                     }
                     .onChange(of: model.displayedAnswer) { _, _ in
                         guard model.conversation.count > 1 else { return }

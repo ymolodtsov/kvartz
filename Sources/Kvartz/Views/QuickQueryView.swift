@@ -237,7 +237,6 @@ struct QuickQueryView: View {
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-
                         if !model.pendingQuestion.isEmpty {
                             submittedQuestion(model.pendingQuestion)
                             ProcessingView()
@@ -280,6 +279,9 @@ struct QuickQueryView: View {
                         withAnimation(.easeOut(duration: 0.18)) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: model.displayedAnswer) { _, _ in

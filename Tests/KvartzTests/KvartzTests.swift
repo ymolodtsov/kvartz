@@ -1,7 +1,36 @@
+import AppKit
 import XCTest
 @testable import Kvartz
 
 final class KvartzTests: XCTestCase {
+    func testPanelGrowthKeepsItsTopEdgeFixed() {
+        let current = NSRect(x: 120, y: 400, width: 420, height: 142)
+        let resized = panelFrameKeepingTop(
+            currentFrame: current,
+            preferredHeight: 184,
+            width: 420,
+            topY: current.maxY,
+            visibleFrame: NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+
+        XCTAssertEqual(resized.maxY, current.maxY)
+        XCTAssertEqual(resized.minY, current.maxY - 184)
+    }
+
+    func testPanelGrowthStopsAtTheVisibleScreenBottom() {
+        let current = NSRect(x: 120, y: 40, width: 420, height: 142)
+        let resized = panelFrameKeepingTop(
+            currentFrame: current,
+            preferredHeight: 260,
+            width: 420,
+            topY: current.maxY,
+            visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        )
+
+        XCTAssertEqual(resized.maxY, current.maxY)
+        XCTAssertEqual(resized.minY, 24)
+    }
+
     func testPromptPolicyKeepsAnswersShortAndAllowsFormatting() {
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("briefly"))
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("Markdown"))

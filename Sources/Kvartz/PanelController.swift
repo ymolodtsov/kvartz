@@ -7,6 +7,23 @@ final class QueryPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+func panelFrameKeepingTop(
+    currentFrame: NSRect,
+    preferredHeight: CGFloat,
+    width: CGFloat,
+    topY: CGFloat,
+    visibleFrame: NSRect
+) -> NSRect {
+    let availableHeight = max(1, topY - visibleFrame.minY)
+    let height = min(preferredHeight, availableHeight)
+    return NSRect(
+        x: currentFrame.origin.x,
+        y: topY - height,
+        width: width,
+        height: height
+    )
+}
+
 @MainActor
 final class QueryPanelController: NSWindowController {
     private let model: AppModel
@@ -15,8 +32,8 @@ final class QueryPanelController: NSWindowController {
     private let topInset: CGFloat = 64
     private let savedAnchorXKey = "panelAnchorX"
     private let savedTopYKey = "panelTopY"
-    private var panelTopAnchor: CGFloat?
-    private var isApplyingProgrammaticFrame = false
+    private var resizeAnchorTopY: CGFloat?
+    private var isApplyingContentFrame = false
     private var resizeGeneration = 0
 
     init(model: AppModel) {
@@ -44,9 +61,17 @@ final class QueryPanelController: NSWindowController {
             rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
         )
 
+        Publishers.Merge(
+            model.$editorHeight.dropFirst().map { _ in () },
+            model.$followUpEditorHeight.dropFirst().map { _ in () }
+        )
+            .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
+            .sink { [weak self] in self?.resizeToContent(animated: true) }
+            .store(in: &cancellables)
+
         Publishers.CombineLatest4(
-            model.$editorHeight,
-            model.$followUpEditorHeight,
+            model.$conversation,
+            model.$pendingQuestion,
             model.$phase,
             model.$isRevealingAnswer
         )
@@ -69,7 +94,7 @@ final class QueryPanelController: NSWindowController {
         guard let panel = window else { return }
         resizeToContent(animated: false)
         positionForOpening(panel)
-        panelTopAnchor = panel.frame.maxY
+        resizeAnchorTopY = panel.frame.maxY
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: .kvartzFocusQuery, object: nil)
@@ -85,16 +110,24 @@ final class QueryPanelController: NSWindowController {
         let targetHeight = preferredHeight()
         let oldFrame = panel.frame
         let screen = panel.screen ?? NSScreen.main
-        let visibleTop = screen?.visibleFrame.maxY ?? oldFrame.maxY
-        let fallbackTop = visibleTop - topInset
-        let requestedTop = panel.isVisible ? (panelTopAnchor ?? oldFrame.maxY) : fallbackTop
-        let anchoredTop = min(requestedTop, visibleTop)
-        let target = NSRect(x: oldFrame.origin.x, y: anchoredTop - targetHeight, width: panelWidth, height: targetHeight)
+        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: panelWidth, height: 800)
+        let fallbackTop = visibleFrame.maxY - topInset
+        let requestedTop = panel.isVisible ? (resizeAnchorTopY ?? oldFrame.maxY) : fallbackTop
+        let anchoredTop = min(requestedTop, visibleFrame.maxY)
+        let target = panelFrameKeepingTop(
+            currentFrame: oldFrame,
+            preferredHeight: targetHeight,
+            width: panelWidth,
+            topY: anchoredTop,
+            visibleFrame: visibleFrame
+        )
 
+        resizeAnchorTopY = anchoredTop
         guard !oldFrame.equalTo(target) else { return }
+
         resizeGeneration += 1
         let generation = resizeGeneration
-        isApplyingProgrammaticFrame = true
+        isApplyingContentFrame = true
 
         if animated && panel.isVisible {
             NSAnimationContext.runAnimationGroup(
@@ -106,13 +139,13 @@ final class QueryPanelController: NSWindowController {
                 completionHandler: { [weak self] in
                     Task { @MainActor in
                         guard let self, generation == self.resizeGeneration else { return }
-                        self.isApplyingProgrammaticFrame = false
+                        self.isApplyingContentFrame = false
                     }
                 }
             )
         } else {
             panel.setFrame(target, display: true)
-            isApplyingProgrammaticFrame = false
+            isApplyingContentFrame = false
         }
     }
 
@@ -170,15 +203,15 @@ final class QueryPanelController: NSWindowController {
         frame.origin.x = min(max(frame.origin.x, screen.visibleFrame.minX), screen.visibleFrame.maxX - frame.width)
         frame.origin.y = min(max(frame.origin.y, screen.visibleFrame.minY), screen.visibleFrame.maxY - frame.height)
         panel.setFrame(frame, display: false)
+        resizeAnchorTopY = frame.maxY
     }
 }
 
 extension QueryPanelController: NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
-        guard let panel = notification.object as? NSWindow,
-              panel.isVisible,
-              !isApplyingProgrammaticFrame else { return }
-        panelTopAnchor = panel.frame.maxY
+        guard let panel = notification.object as? NSWindow, panel.isVisible else { return }
+        guard !isApplyingContentFrame else { return }
+        resizeAnchorTopY = panel.frame.maxY
         UserDefaults.standard.set(panel.frame.midX, forKey: savedAnchorXKey)
         UserDefaults.standard.set(panel.frame.maxY, forKey: savedTopYKey)
     }

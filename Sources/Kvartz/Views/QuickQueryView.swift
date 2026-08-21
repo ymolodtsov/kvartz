@@ -1,13 +1,21 @@
+import KvartzUI
 import SwiftUI
+
+enum QuickQueryLayout {
+    static let submittedQueryHeight: CGFloat = 40
+    static let activeEditorVerticalPadding: CGFloat = 8
+    static let rootChromeHeight: CGFloat = 90
+}
 
 struct QuickQueryView: View {
     @ObservedObject var model: AppModel
     let onClose: () -> Void
     @State private var didCopy = false
     @State private var copyConfirmationGeneration = 0
+    @State private var isAnswerScrolled = false
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             header
             editor
             phaseContent
@@ -16,6 +24,7 @@ struct QuickQueryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .glassSurface(radius: 30)
         .padding(12)
+        .environment(\.colorScheme, .dark)
     }
 
     private var header: some View {
@@ -44,8 +53,7 @@ struct QuickQueryView: View {
                 .foregroundStyle(.white.opacity(0.52))
                 .padding(.leading, 10)
                 .padding(.trailing, 8)
-                .frame(height: 30)
-                .background(.white.opacity(0.065), in: Capsule())
+                .frame(height: 40)
             }
             .menuIndicator(.hidden)
             .buttonStyle(.plain)
@@ -73,10 +81,19 @@ struct QuickQueryView: View {
             .buttonStyle(GlassIconButtonStyle())
             .help("Close")
         }
-        .frame(height: 34)
+        .frame(height: 30)
     }
 
+    @ViewBuilder
     private var editor: some View {
+        if isQuerySubmitted {
+            submittedQuery
+        } else {
+            queryEditor
+        }
+    }
+
+    private var queryEditor: some View {
         ZStack(alignment: .leading) {
             if model.query.isEmpty {
                 Text(model.configuredProviders.isEmpty ? "Configure a provider in Settings…" : "Ask anything…")
@@ -112,6 +129,35 @@ struct QuickQueryView: View {
         }
     }
 
+    private var submittedQuery: some View {
+        Text(compactQuery)
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(.white.opacity(0.78))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .frame(height: QuickQueryLayout.submittedQueryHeight)
+            .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            }
+            .help(model.query)
+            .accessibilityLabel("Sent message")
+            .accessibilityValue(model.query)
+    }
+
+    private var isQuerySubmitted: Bool {
+        !model.pendingQuestion.isEmpty || !model.conversation.isEmpty
+    }
+
+    private var compactQuery: String {
+        model.query
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
     @ViewBuilder
     private var phaseContent: some View {
         switch model.phase {
@@ -144,28 +190,19 @@ struct QuickQueryView: View {
                 }
                 .padding(10)
                 .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            } else {
-                HStack {
-                    Text("Return to ask  ·  Shift–Return for a new line")
-                    Spacer()
-                    Text(model.shortcut.displayString)
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.34))
-                .padding(.horizontal, 4)
             }
         case .loading:
             if model.conversation.isEmpty {
                 ProcessingView()
                     .frame(height: 58)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity)
             } else {
                 answerView
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity)
             }
         case .answer:
             answerView
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
         case .error:
             if model.conversation.isEmpty {
                 errorView
@@ -177,56 +214,81 @@ struct QuickQueryView: View {
 
     private var answerView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ZStack(alignment: .bottom) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
-                                if index > 0 {
-                                    submittedQuestion(turn.question)
-                                }
-
-                                Text(markdown: answerText(for: index, turn: turn))
-                                    .font(.system(size: 16, weight: .regular))
-                                    .foregroundStyle(.white.opacity(0.93))
-                                    .lineSpacing(4)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            if !model.pendingQuestion.isEmpty {
-                                submittedQuestion(model.pendingQuestion)
-                                ProcessingView()
-                                    .frame(height: 44)
-                            }
-
-                            Color.clear
-                                .frame(height: 52)
-                                .id("conversation-bottom")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: AnswerScrollOffsetKey.self,
+                                value: geometry.frame(in: .named("answer-scroll")).minY
+                            )
                         }
-                        .padding(.horizontal, 3)
-                    }
-                    .onChange(of: model.pendingQuestion) { _, question in
-                        guard !question.isEmpty else { return }
-                        DispatchQueue.main.async {
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        .frame(height: 0)
+
+                        ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
+                            if index > 0 {
+                                submittedQuestion(turn.question)
                             }
+
+                            Text(markdown: answerText(for: index, turn: turn))
+                                .font(.system(size: 16, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.93))
+                                .lineSpacing(4)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
+
+                        if !model.pendingQuestion.isEmpty {
+                            submittedQuestion(model.pendingQuestion)
+                            ProcessingView()
+                                .frame(height: 44)
+                        }
+
+                        Color.clear
+                            .frame(height: 52)
+                            .id("conversation-bottom")
                     }
-                    .onChange(of: model.displayedAnswer) { _, _ in
-                        guard model.conversation.count > 1 else { return }
-                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    .padding(.horizontal, 3)
+                }
+                .coordinateSpace(name: "answer-scroll")
+                .mask {
+                    VStack(spacing: 0) {
+                        LinearGradient(
+                            colors: [.white.opacity(isAnswerScrolled ? 0 : 1), .white],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 28)
+                        .animation(.easeOut(duration: 0.12), value: isAnswerScrolled)
+
+                        Color.white
+
+                        LinearGradient(
+                            colors: [.white, .clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 28)
                     }
                 }
-
-                LinearGradient(
-                    colors: [.clear, Color.black.opacity(0.93)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 52)
-                .allowsHitTesting(false)
+                .onPreferenceChange(AnswerScrollOffsetKey.self) { offset in
+                    isAnswerScrolled = offset < -1
+                }
+                .onChange(of: model.pendingQuestion) { _, question in
+                    guard !question.isEmpty else { return }
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        }
+                    }
+                }
+                .onChange(of: model.displayedAnswer) { _, _ in
+                    guard model.conversation.count > 1 else { return }
+                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                }
+                .onDisappear {
+                    isAnswerScrolled = false
+                }
             }
             .scrollIndicators(.hidden)
 
@@ -429,6 +491,14 @@ private struct GlassIconButtonStyle: ButtonStyle {
             .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.001), in: Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct AnswerScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

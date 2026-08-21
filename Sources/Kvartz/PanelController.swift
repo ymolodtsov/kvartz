@@ -15,6 +15,9 @@ final class QueryPanelController: NSWindowController {
     private let topInset: CGFloat = 64
     private let savedAnchorXKey = "panelAnchorX"
     private let savedTopYKey = "panelTopY"
+    private var panelTopAnchor: CGFloat?
+    private var isApplyingProgrammaticFrame = false
+    private var resizeGeneration = 0
 
     init(model: AppModel) {
         self.model = model
@@ -41,17 +44,14 @@ final class QueryPanelController: NSWindowController {
             rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
         )
 
-        Publishers.CombineLatest(
-            Publishers.CombineLatest4(
-                model.$editorHeight,
-                model.$followUpEditorHeight,
-                model.$displayedAnswer,
-                model.$phase
-            ),
+        Publishers.CombineLatest4(
+            model.$editorHeight,
+            model.$followUpEditorHeight,
+            model.$phase,
             model.$isRevealingAnswer
         )
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
-            .sink { [weak self] _, _ in self?.resizeToContent(animated: true) }
+            .sink { [weak self] _ in self?.resizeToContent(animated: true) }
             .store(in: &cancellables)
     }
 
@@ -69,6 +69,7 @@ final class QueryPanelController: NSWindowController {
         guard let panel = window else { return }
         resizeToContent(animated: false)
         positionForOpening(panel)
+        panelTopAnchor = panel.frame.maxY
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: .kvartzFocusQuery, object: nil)
@@ -83,30 +84,50 @@ final class QueryPanelController: NSWindowController {
         guard let panel = window else { return }
         let targetHeight = preferredHeight()
         let oldFrame = panel.frame
-        let top = oldFrame.maxY
         let screen = panel.screen ?? NSScreen.main
-        let fallbackTop = (screen?.visibleFrame.maxY ?? topInset + targetHeight) - topInset
-        let anchoredTop = panel.isVisible ? top : fallbackTop
+        let visibleTop = screen?.visibleFrame.maxY ?? oldFrame.maxY
+        let fallbackTop = visibleTop - topInset
+        let requestedTop = panel.isVisible ? (panelTopAnchor ?? oldFrame.maxY) : fallbackTop
+        let anchoredTop = min(requestedTop, visibleTop)
         let target = NSRect(x: oldFrame.origin.x, y: anchoredTop - targetHeight, width: panelWidth, height: targetHeight)
 
+        guard !oldFrame.equalTo(target) else { return }
+        resizeGeneration += 1
+        let generation = resizeGeneration
+        isApplyingProgrammaticFrame = true
+
         if animated && panel.isVisible {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(target, display: true)
-            }
+            NSAnimationContext.runAnimationGroup(
+                { context in
+                    context.duration = 0.22
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(target, display: true)
+                },
+                completionHandler: { [weak self] in
+                    Task { @MainActor in
+                        guard let self, generation == self.resizeGeneration else { return }
+                        self.isApplyingProgrammaticFrame = false
+                    }
+                }
+            )
         } else {
             panel.setFrame(target, display: true)
+            isApplyingProgrammaticFrame = false
         }
     }
 
     private func preferredHeight() -> CGFloat {
-        let base = 68 + model.editorHeight
+        let queryAreaHeight = model.conversation.isEmpty && model.pendingQuestion.isEmpty
+            ? model.editorHeight + QuickQueryLayout.activeEditorVerticalPadding
+            : QuickQueryLayout.submittedQueryHeight
+        // Includes the outer and inner 12pt insets, the 30pt header, and both
+        // 6pt root-stack gaps. The query area's own height is added separately.
+        let base = QuickQueryLayout.rootChromeHeight + queryAreaHeight
         switch model.phase {
         case .ready:
-            return base + 24
+            return base + (model.configuredProviders.isEmpty ? 48 : 0)
         case .loading:
-            if model.conversation.isEmpty { return base + 74 }
+            if model.conversation.isEmpty { return base + 58 }
             return conversationPanelHeight(base: base, additionalChrome: 88)
         case .error:
             if model.conversation.isEmpty { return min(base + 104, 380) }
@@ -154,7 +175,10 @@ final class QueryPanelController: NSWindowController {
 
 extension QueryPanelController: NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
-        guard let panel = notification.object as? NSWindow, panel.isVisible else { return }
+        guard let panel = notification.object as? NSWindow,
+              panel.isVisible,
+              !isApplyingProgrammaticFrame else { return }
+        panelTopAnchor = panel.frame.maxY
         UserDefaults.standard.set(panel.frame.midX, forKey: savedAnchorXKey)
         UserDefaults.standard.set(panel.frame.maxY, forKey: savedTopYKey)
     }

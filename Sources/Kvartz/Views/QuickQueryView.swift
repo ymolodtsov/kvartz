@@ -220,25 +220,35 @@ struct QuickQueryView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                             ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
-                                Section {
-                                    renderedAnswer(for: index, turn: turn)
-                                        .padding(.top, 14)
-                                        .padding(.bottom, answerBottomPadding(for: index))
-                                        .mask {
-                                            PinnedHeaderContentMask(
-                                                headerHeight: estimatedSubmittedMessageHeight(
-                                                    question: turn.question,
-                                                    hasAttachments: !turn.attachments.isEmpty
-                                                )
-                                            )
-                                        }
-                                } header: {
-                                    userMessageHeader(
-                                        turn.question,
-                                        attachments: turn.attachments,
-                                        index: index,
-                                        isPending: false
-                                    )
+                                if shouldPinConversationTurn(at: index) {
+                                    Section {
+                                        conversationAnswer(
+                                            for: index,
+                                            turn: turn,
+                                            fadesUnderPinnedHeader: true
+                                        )
+                                    } header: {
+                                        userMessageHeader(
+                                            turn.question,
+                                            attachments: turn.attachments,
+                                            index: index,
+                                            isPending: false
+                                        )
+                                    }
+                                } else {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        userMessageHeader(
+                                            turn.question,
+                                            attachments: turn.attachments,
+                                            index: index,
+                                            isPending: false
+                                        )
+                                        conversationAnswer(
+                                            for: index,
+                                            turn: turn,
+                                            fadesUnderPinnedHeader: false
+                                        )
+                                    }
                                 }
                             }
 
@@ -288,6 +298,15 @@ struct QuickQueryView: View {
                     .onChange(of: pendingMessageKey) { _, messageKey in
                         guard !messageKey.isEmpty else { return }
                         let anchor = userMessageAnchor(index: model.conversation.count)
+                        DispatchQueue.main.async {
+                            withAnimation(sendAnimation) {
+                                proxy.scrollTo(anchor, anchor: .top)
+                            }
+                        }
+                    }
+                    .onChange(of: model.conversation.count) { previousCount, count in
+                        guard count > previousCount, count > 1 else { return }
+                        let anchor = userMessageAnchor(index: count - 1)
                         DispatchQueue.main.async {
                             withAnimation(sendAnimation) {
                                 proxy.scrollTo(anchor, anchor: .top)
@@ -472,6 +491,35 @@ struct QuickQueryView: View {
             && model.pendingAttachments.isEmpty
             && index == model.conversation.count - 1
         return isFinalSection ? 52 : 14
+    }
+
+    private func shouldPinConversationTurn(at index: Int) -> Bool {
+        let hasPendingMessage = !model.pendingQuestion.isEmpty || !model.pendingAttachments.isEmpty
+        return !hasPendingMessage && index == model.conversation.count - 1
+    }
+
+    @ViewBuilder
+    private func conversationAnswer(
+        for index: Int,
+        turn: ConversationTurn,
+        fadesUnderPinnedHeader: Bool
+    ) -> some View {
+        let content = renderedAnswer(for: index, turn: turn)
+            .padding(.top, 14)
+            .padding(.bottom, answerBottomPadding(for: index))
+
+        if fadesUnderPinnedHeader {
+            content.mask {
+                PinnedHeaderContentMask(
+                    headerHeight: estimatedSubmittedMessageHeight(
+                        question: turn.question,
+                        hasAttachments: !turn.attachments.isEmpty
+                    )
+                )
+            }
+        } else {
+            content
+        }
     }
 
     private var pendingMessageKey: String {

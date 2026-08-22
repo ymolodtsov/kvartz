@@ -313,6 +313,7 @@ final class QueryPanelController: NSWindowController {
 
     private func conversationPanelHeight(base: CGFloat, additionalChrome: CGFloat) -> CGFloat {
         let widthInCharacters: CGFloat = 46
+        let bottomFadeClearance: CGFloat = 24
         let text = model.conversation
             .map { "\($0.question)\n\($0.answer)" }
             .joined(separator: "\n") + model.pendingQuestion
@@ -322,7 +323,13 @@ final class QueryPanelController: NSWindowController {
             + (model.pendingAttachments.isEmpty ? 0 : 1)
         let attachmentHeight = CGFloat(attachmentTurns * 62)
         let contentHeight = min(
-            max(92, max(CGFloat(explicitLines), wrappedLines) * 24 + 28 + attachmentHeight),
+            max(
+                92,
+                max(CGFloat(explicitLines), wrappedLines) * 24
+                    + 28
+                    + bottomFadeClearance
+                    + attachmentHeight
+            ),
             560
         )
         let screenHeight = window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800

@@ -104,6 +104,27 @@ final class KvartzTests: XCTestCase {
         XCTAssertEqual(PanelOpeningPosition.load(from: defaults), .lastPosition)
     }
 
+    func testInitialLoadingHeightAccountsForWrappedQuestion() {
+        let short = estimatedSubmittedMessageHeight(
+            question: "Best email client?",
+            hasAttachments: false
+        )
+        let wrapped = estimatedSubmittedMessageHeight(
+            question: "Want to find some blue trousers for a sports jackets, what other brands like Mango should I look into?",
+            hasAttachments: false
+        )
+
+        XCTAssertEqual(short, 44)
+        XCTAssertGreaterThan(wrapped, short)
+    }
+
+    func testInitialLoadingHeightAccountsForQuestionAttachments() {
+        XCTAssertGreaterThan(
+            estimatedSubmittedMessageHeight(question: "What is this?", hasAttachments: true),
+            estimatedSubmittedMessageHeight(question: "What is this?", hasAttachments: false)
+        )
+    }
+
     func testPromptPolicyKeepsAnswersShortAndAllowsFormatting() {
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("briefly"))
         XCTAssertTrue(PromptPolicy.defaultSystem.contains("Markdown"))
@@ -286,5 +307,84 @@ final class KvartzTests: XCTestCase {
         }
         UserDefaults.standard.removeObject(forKey: "codexExecutable")
         XCTAssertEqual(try CodexRPCSession.locateExecutable().path, bundled)
+    }
+
+    func testCodexOutputStripsInternalCitationAnnotations() {
+        let answer = "Use **Mimestream**. \u{E200}cite\u{E202}turn0search11\u{E202}turn0news30\u{E201}\n\nNext paragraph."
+
+        XCTAssertEqual(
+            CodexOutputSanitizer.stripUnsupportedCitations(from: answer),
+            "Use **Mimestream**.\n\nNext paragraph."
+        )
+    }
+
+    func testCodexOutputPreservesRegularMarkdownAndNonCitationText() {
+        let answer = "Try [Mimestream](https://mimestream.com). \u{E200}image_group\u{E202}mail-apps\u{E201}"
+
+        XCTAssertEqual(CodexOutputSanitizer.stripUnsupportedCitations(from: answer), answer)
+    }
+
+    func testImageAttachmentIsNormalizedForProviderUpload() throws {
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 2,
+                pixelsHigh: 2,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        )
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.addRepresentation(bitmap)
+
+        let attachment = try QueryAttachment.make(from: image, suggestedName: "Screenshot.tiff")
+
+        XCTAssertEqual(attachment.name, "Screenshot.png")
+        XCTAssertEqual(attachment.mediaType, "image/png")
+        XCTAssertFalse(attachment.data.isEmpty)
+        XCTAssertTrue(attachment.dataURL.hasPrefix("data:image/png;base64,"))
+        XCTAssertNotNil(NSImage(data: attachment.data))
+    }
+
+    func testAttachmentPayloadsMatchEveryProviderProtocol() throws {
+        let attachment = QueryAttachment(
+            name: "pixel.png",
+            mediaType: "image/png",
+            data: Data([1, 2, 3])
+        )
+        let messages = [
+            ConversationMessage(role: .user, content: "Explain this", attachments: [attachment])
+        ]
+
+        let openAI = ProviderMessagePayloads.openAIResponses(messages)
+        let openAIContent = try XCTUnwrap(openAI.first?["content"] as? [[String: Any]])
+        XCTAssertEqual(openAIContent.map { $0["type"] as? String }, ["input_text", "input_image"])
+
+        let anthropic = ProviderMessagePayloads.anthropic(messages)
+        let anthropicContent = try XCTUnwrap(anthropic.first?["content"] as? [[String: Any]])
+        let anthropicSource = try XCTUnwrap(anthropicContent.last?["source"] as? [String: String])
+        XCTAssertEqual(anthropicSource["media_type"], "image/png")
+        XCTAssertEqual(anthropicSource["data"], "AQID")
+
+        let gemini = ProviderMessagePayloads.gemini(messages)
+        let geminiParts = try XCTUnwrap(gemini.first?["parts"] as? [[String: Any]])
+        let inlineData = try XCTUnwrap(geminiParts.last?["inline_data"] as? [String: String])
+        XCTAssertEqual(inlineData["mime_type"], "image/png")
+
+        let openAIChat = ProviderMessagePayloads.openAIChat(messages)
+        let chatContent = try XCTUnwrap(openAIChat.first?["content"] as? [[String: Any]])
+        XCTAssertEqual(chatContent.last?["type"] as? String, "image_url")
+
+        let ollama = ProviderMessagePayloads.ollama(messages)
+        XCTAssertEqual(ollama.first?["images"] as? [String], ["AQID"])
+
+        for payload in [openAI, anthropic, gemini, openAIChat, ollama] {
+            XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: payload))
+        }
     }
 }

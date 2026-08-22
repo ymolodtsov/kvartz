@@ -22,7 +22,7 @@ API keys are stored in macOS Keychain. Provider models, base URLs, and the activ
 
 Kvartz requires macOS 14 or later and an Apple Silicon Mac.
 
-1. Download [`Kvartz-0.1.0-macOS-arm64.zip`](Builds/Kvartz-0.1.0-macOS-arm64.zip).
+1. Download [`Kvartz-0.1.1-macOS-arm64.zip`](Builds/Kvartz-0.1.1-macOS-arm64.zip).
 2. Unzip it and move `Kvartz.app` to your Applications folder.
 3. Open `Kvartz.app` once. Because this build is not notarized, macOS may block the first launch.
 4. Open **System Settings → Privacy & Security**, scroll to **Security**, then click **Open Anyway** beside Kvartz.

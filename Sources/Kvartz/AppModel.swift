@@ -51,6 +51,9 @@ final class AppModel: ObservableObject {
     @Published var displayedAnswer = ""
     @Published var editorHeight: CGFloat = 50
     @Published var followUpEditorHeight: CGFloat = 44
+    @Published private(set) var draftAttachments: [QueryAttachment] = []
+    @Published private(set) var pendingAttachments: [QueryAttachment] = []
+    @Published private(set) var attachmentError = ""
     @Published private(set) var isRevealingAnswer = false
     @Published var phase: Phase = .ready
     @Published private(set) var conversation: [ConversationTurn] = []
@@ -95,17 +98,17 @@ final class AppModel: ObservableObject {
     func submit() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard conversation.isEmpty else { return }
-        performRequest(question: trimmed)
+        performRequest(question: trimmed, attachments: draftAttachments)
     }
 
     func submitFollowUp() {
         let trimmed = followUpQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !conversation.isEmpty else { return }
-        performRequest(question: trimmed)
+        performRequest(question: trimmed, attachments: draftAttachments)
     }
 
-    private func performRequest(question trimmed: String) {
-        guard !trimmed.isEmpty, phase != .loading else { return }
+    private func performRequest(question trimmed: String, attachments: [QueryAttachment]) {
+        guard !trimmed.isEmpty || !attachments.isEmpty, phase != .loading else { return }
         guard configuredProviders.contains(selectedProvider) else {
             phase = .error("Configure an AI provider in Settings, then try again.")
             return
@@ -116,14 +119,17 @@ final class AppModel: ObservableObject {
         isRevealingAnswer = false
         displayedAnswer = ""
         pendingQuestion = trimmed
+        pendingAttachments = attachments
+        draftAttachments = []
+        attachmentError = ""
         phase = .loading
         let provider = selectedProvider
         let messages = conversation.flatMap { turn in
             [
-                ConversationMessage(role: .user, content: turn.question),
+                ConversationMessage(role: .user, content: turn.question, attachments: turn.attachments),
                 ConversationMessage(role: .assistant, content: turn.answer)
             ]
-        } + [ConversationMessage(role: .user, content: trimmed)]
+        } + [ConversationMessage(role: .user, content: trimmed, attachments: attachments)]
         let prompt = systemPrompt
 
         requestTask = Task {
@@ -136,8 +142,11 @@ final class AppModel: ObservableObject {
                 )
                 guard !Task.isCancelled else { return }
                 answer = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                conversation.append(ConversationTurn(question: trimmed, answer: answer))
+                conversation.append(
+                    ConversationTurn(question: trimmed, answer: answer, attachments: attachments)
+                )
                 pendingQuestion = ""
+                pendingAttachments = []
                 followUpQuery = ""
                 followUpEditorHeight = 44
                 isRevealingAnswer = true
@@ -145,10 +154,14 @@ final class AppModel: ObservableObject {
                 revealAnswer()
             } catch is CancellationError {
                 pendingQuestion = ""
+                pendingAttachments = []
+                draftAttachments = attachments
                 isRevealingAnswer = false
                 phase = conversation.isEmpty ? .ready : .answer
             } catch {
                 pendingQuestion = ""
+                pendingAttachments = []
+                draftAttachments = attachments
                 isRevealingAnswer = false
                 phase = .error(error.localizedDescription)
             }
@@ -166,10 +179,64 @@ final class AppModel: ObservableObject {
         displayedAnswer = ""
         editorHeight = 50
         followUpEditorHeight = 44
+        draftAttachments = []
+        pendingAttachments = []
+        attachmentError = ""
         isRevealingAnswer = false
         conversation = []
         pendingQuestion = ""
         phase = .ready
+    }
+
+    @discardableResult
+    func importAttachments(from pasteboard: NSPasteboard) -> Bool {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+        var recognizedImage = false
+
+        for url in urls {
+            guard NSImage(contentsOf: url) != nil else { continue }
+            recognizedImage = true
+            addAttachment(from: url)
+        }
+        if recognizedImage { return true }
+
+        guard let image = NSImage(pasteboard: pasteboard) else { return false }
+        addAttachment(image, suggestedName: "Pasted image")
+        return true
+    }
+
+    func addAttachment(_ image: NSImage, suggestedName: String) {
+        guard draftAttachments.count < QueryAttachment.maximumCount else {
+            attachmentError = "You can attach up to \(QueryAttachment.maximumCount) images."
+            return
+        }
+        do {
+            draftAttachments.append(try QueryAttachment.make(from: image, suggestedName: suggestedName))
+            attachmentError = ""
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    func addAttachment(from url: URL) {
+        guard draftAttachments.count < QueryAttachment.maximumCount else {
+            attachmentError = "You can attach up to \(QueryAttachment.maximumCount) images."
+            return
+        }
+        do {
+            draftAttachments.append(try QueryAttachment.load(from: url))
+            attachmentError = ""
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    func removeDraftAttachment(id: QueryAttachment.ID) {
+        draftAttachments.removeAll { $0.id == id }
+        attachmentError = ""
     }
 
     func copyAnswer() {
@@ -310,6 +377,13 @@ struct ConversationTurn: Identifiable, Equatable, Sendable {
     let id = UUID()
     let question: String
     let answer: String
+    let attachments: [QueryAttachment]
+
+    init(question: String, answer: String, attachments: [QueryAttachment] = []) {
+        self.question = question
+        self.answer = answer
+        self.attachments = attachments
+    }
 }
 
 struct ConversationMessage: Equatable, Sendable {
@@ -320,6 +394,13 @@ struct ConversationMessage: Equatable, Sendable {
 
     let role: Role
     let content: String
+    let attachments: [QueryAttachment]
+
+    init(role: Role, content: String, attachments: [QueryAttachment] = []) {
+        self.role = role
+        self.content = content
+        self.attachments = attachments
+    }
 }
 
 enum PromptPolicy {

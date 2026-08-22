@@ -88,14 +88,22 @@ actor CodexProvider {
 
         let transcript = messages.map { message in
             let label = message.role == .assistant ? "Assistant" : "User"
-            return "\(label):\n\(message.content)"
+            let attachmentList = message.attachments
+                .map { "[Attached image: \($0.name)]" }
+                .joined(separator: "\n")
+            return ["\(label):", message.content, attachmentList]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
         }.joined(separator: "\n\n")
         let prompt = "\(systemPrompt)\n\nConversation:\n\(transcript)"
+        let images = messages.flatMap(\.attachments).map { attachment in
+            ["type": "image", "url": attachment.dataURL]
+        }
         _ = try await session.request(
             method: "turn/start",
             params: [
                 "threadId": threadID,
-                "input": [["type": "text", "text": prompt]],
+                "input": [["type": "text", "text": prompt]] + images,
                 "model": model,
                 "effort": "low",
                 "approvalPolicy": "never",
@@ -123,7 +131,7 @@ actor CodexProvider {
         }
 
         guard !output.isEmpty else { throw LLMError.invalidResponse }
-        return output
+        return CodexOutputSanitizer.stripUnsupportedCitations(from: output)
     }
 
     private func connectedSession() async throws -> CodexRPCSession {
@@ -132,7 +140,7 @@ actor CodexProvider {
         try session.start()
         _ = try await session.request(
             method: "initialize",
-            params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.0"]]
+            params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.1"]]
         )
         try session.notify(method: "initialized", params: [:])
         return session
@@ -149,6 +157,43 @@ actor CodexProvider {
         case let type?: return "Connected · \(type)"
         default: return "Connected"
         }
+    }
+}
+
+enum CodexOutputSanitizer {
+    private static let annotationStart: Character = "\u{E200}"
+    private static let annotationEnd: Character = "\u{E201}"
+    private static let annotationSeparator: Character = "\u{E202}"
+
+    static func stripUnsupportedCitations(from text: String) -> String {
+        var result = ""
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            guard text[index] == annotationStart else {
+                result.append(text[index])
+                index = text.index(after: index)
+                continue
+            }
+
+            let payloadStart = text.index(after: index)
+            let citationPrefix = "cite\(annotationSeparator)"
+            guard text[payloadStart...].hasPrefix(citationPrefix),
+                  let annotationEndIndex = text[payloadStart...].firstIndex(of: annotationEnd) else {
+                result.append(text[index])
+                index = payloadStart
+                continue
+            }
+
+            // Citations normally follow a claim after one separating space. Remove
+            // that space as well so the unsupported annotation leaves no artifact.
+            if result.last == " " {
+                result.removeLast()
+            }
+            index = text.index(after: annotationEndIndex)
+        }
+
+        return result
     }
 }
 

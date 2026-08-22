@@ -95,6 +95,33 @@ func panelFrameAtSavedPosition(
     return NSRect(x: x, y: y, width: panelSize.width, height: height)
 }
 
+func estimatedSubmittedMessageHeight(
+    question: String,
+    hasAttachments: Bool,
+    contentWidth: CGFloat = 332
+) -> CGFloat {
+    let paragraphStyle = NSMutableParagraphStyle()
+    paragraphStyle.lineSpacing = 3
+    let textHeight: CGFloat
+    if question.isEmpty {
+        textHeight = 0
+    } else {
+        textHeight = ceil(
+            (question as NSString).boundingRect(
+                with: NSSize(width: contentWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 16),
+                    .paragraphStyle: paragraphStyle
+                ]
+            ).height
+        )
+    }
+    let attachmentHeight: CGFloat = hasAttachments ? 48 : 0
+    let contentSpacing: CGFloat = textHeight > 0 && hasAttachments ? 9 : 0
+    return max(44, textHeight + attachmentHeight + contentSpacing + 20)
+}
+
 @MainActor
 final class QueryPanelController: NSWindowController {
     private enum ResizeAnchor {
@@ -137,9 +164,11 @@ final class QueryPanelController: NSWindowController {
             rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
         )
 
-        Publishers.Merge(
+        Publishers.Merge4(
             model.$editorHeight.dropFirst().map { _ in () },
-            model.$followUpEditorHeight.dropFirst().map { _ in () }
+            model.$followUpEditorHeight.dropFirst().map { _ in () },
+            model.$draftAttachments.dropFirst().map { _ in () },
+            model.$pendingAttachments.dropFirst().map { _ in () }
         )
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
             .sink { [weak self] in self?.resizeToContent(animated: true) }
@@ -240,23 +269,44 @@ final class QueryPanelController: NSWindowController {
     }
 
     private func preferredHeight() -> CGFloat {
-        let isShowingInitialEditor = model.conversation.isEmpty && model.pendingQuestion.isEmpty
+        let isShowingInitialEditor = model.conversation.isEmpty
+            && model.pendingQuestion.isEmpty
+            && model.pendingAttachments.isEmpty
+        let draftAttachmentHeight = model.draftAttachments.isEmpty
+            ? 0
+            : QuickQueryLayout.attachmentTrayHeight
         // The initial editor has two root-stack gaps. Once the conversation starts,
         // user messages live in the scroll view and only one root-stack gap remains.
         let base = isShowingInitialEditor
-            ? QuickQueryLayout.rootChromeHeight + model.editorHeight + QuickQueryLayout.activeEditorVerticalPadding
+            ? QuickQueryLayout.rootChromeHeight
+                + model.editorHeight
+                + draftAttachmentHeight
+                + QuickQueryLayout.activeEditorVerticalPadding
             : QuickQueryLayout.conversationChromeHeight
         switch model.phase {
         case .ready:
             return base + (model.configuredProviders.isEmpty ? 48 : 0)
         case .loading:
-            if model.conversation.isEmpty { return base + 104 }
+            if model.conversation.isEmpty {
+                let pendingMessageHeight = estimatedSubmittedMessageHeight(
+                    question: model.pendingQuestion,
+                    hasAttachments: !model.pendingAttachments.isEmpty
+                )
+                // Preserve the existing 60pt loader/chrome allowance while sizing
+                // the submitted message from its actual wrapped text and images.
+                return base + pendingMessageHeight + 60
+            }
             return conversationPanelHeight(base: base, additionalChrome: 88)
         case .error:
             if model.conversation.isEmpty { return min(base + 104, 380) }
-            return conversationPanelHeight(base: base, additionalChrome: model.followUpEditorHeight + 136)
+            return conversationPanelHeight(
+                base: base,
+                additionalChrome: model.followUpEditorHeight + draftAttachmentHeight + 136
+            )
         case .answer:
-            let chrome = model.isRevealingAnswer ? 52 : model.followUpEditorHeight + 64
+            let chrome = model.isRevealingAnswer
+                ? 52
+                : model.followUpEditorHeight + draftAttachmentHeight + 64
             return conversationPanelHeight(base: base, additionalChrome: chrome)
         }
     }
@@ -268,7 +318,13 @@ final class QueryPanelController: NSWindowController {
             .joined(separator: "\n") + model.pendingQuestion
         let explicitLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
         let wrappedLines = ceil(CGFloat(text.count) / widthInCharacters)
-        let contentHeight = min(max(92, max(CGFloat(explicitLines), wrappedLines) * 24 + 28), 560)
+        let attachmentTurns = model.conversation.filter { !$0.attachments.isEmpty }.count
+            + (model.pendingAttachments.isEmpty ? 0 : 1)
+        let attachmentHeight = CGFloat(attachmentTurns * 62)
+        let contentHeight = min(
+            max(92, max(CGFloat(explicitLines), wrappedLines) * 24 + 28 + attachmentHeight),
+            560
+        )
         let screenHeight = window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
         return min(base + contentHeight + additionalChrome, screenHeight - 64)
     }

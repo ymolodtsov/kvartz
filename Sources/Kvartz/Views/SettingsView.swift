@@ -2,7 +2,13 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
+    private enum Pane: Equatable {
+        case general
+        case provider(ProviderKind)
+    }
+
     @ObservedObject var model: AppModel
+    @State private var selectedPane: Pane = .general
     @State private var selectedProvider: ProviderKind = .openAI
     @State private var configuration = ProviderConfiguration.load(for: .openAI)
     @State private var codexExecutable = UserDefaults.standard.string(forKey: "codexExecutable") ?? ""
@@ -10,11 +16,20 @@ struct SettingsView: View {
     @State private var isEnteringCustomModel = false
 
     var body: some View {
-        TabView {
-            providersTab
-                .tabItem { Label("Providers", systemImage: "point.3.connected.trianglepath.dotted") }
-            generalTab
-                .tabItem { Label("General", systemImage: "gearshape") }
+        HStack(spacing: 0) {
+            settingsNavigation
+
+            Divider()
+
+            Group {
+                switch selectedPane {
+                case .general:
+                    generalTab
+                case .provider:
+                    providerDetail
+                }
+            }
+            .padding(.leading, 22)
         }
         .padding(18)
         .onAppear {
@@ -26,51 +41,76 @@ struct SettingsView: View {
         }
     }
 
-    private var providersTab: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("AI PROVIDERS")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 5)
+    private var settingsNavigation: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("SETTINGS")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 5)
 
-                ForEach(ProviderKind.allCases) { provider in
-                    Button {
-                        select(provider)
-                    } label: {
-                        HStack(spacing: 9) {
-                            Image(systemName: provider.symbol)
-                                .frame(width: 18)
-                            Text(provider.displayName)
-                            Spacer()
-                            if model.selectedProvider == provider {
-                                Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                            }
-                        }
-                        .font(.system(size: 13, weight: selectedProvider == provider ? .semibold : .regular))
-                        .foregroundStyle(selectedProvider == provider ? .primary : .secondary)
-                        .padding(.horizontal, 10)
-                        .frame(height: 38)
-                        .background(
-                            selectedProvider == provider ? Color.primary.opacity(0.075) : .clear,
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer()
+            navigationButton(
+                title: "General",
+                symbol: "gearshape",
+                pane: .general
+            )
+
+            ForEach(providerTabOrder) { provider in
+                navigationButton(
+                    title: provider.displayName,
+                    symbol: provider.symbol,
+                    pane: .provider(provider),
+                    provider: provider
+                )
             }
-            .frame(width: 175)
-            .padding(.trailing, 16)
-
-            Divider()
-
-            providerDetail
-                .padding(.leading, 22)
+            Spacer()
         }
+        .frame(width: 175)
         .padding(.top, 8)
+        .padding(.trailing, 16)
+    }
+
+    private var providerTabOrder: [ProviderKind] {
+        [.codex, .openAI] + ProviderKind.allCases.filter { $0 != .codex && $0 != .openAI }
+    }
+
+    private func navigationButton(
+        title: String,
+        symbol: String,
+        pane: Pane,
+        provider: ProviderKind? = nil
+    ) -> some View {
+        let isSelected = selectedPane == pane
+
+        return Button {
+            selectedPane = pane
+            if let provider {
+                select(provider)
+            }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: symbol)
+                    .frame(width: 18)
+                Text(title)
+                Spacer()
+                if let provider, model.selectedProvider == provider {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? .primary : .secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 40)
+            .background(
+                isSelected ? Color.primary.opacity(0.075) : .clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -297,6 +337,11 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                     Spacer()
+                    Link(
+                        "Check for Updates",
+                        destination: URL(string: "https://github.com/ymolodtsov/kvartz/tree/main/Builds")!
+                    )
+                    .frame(minHeight: 40)
                     Button("Quit Kvartz", role: .destructive) {
                         NSApp.terminate(nil)
                     }

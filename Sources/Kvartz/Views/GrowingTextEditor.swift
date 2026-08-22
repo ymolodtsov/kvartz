@@ -7,6 +7,7 @@ struct GrowingTextEditor: NSViewRepresentable {
     @Binding var height: CGFloat
     let onSubmit: () -> Void
     let onEscapeWhenEmpty: () -> Void
+    var onPasteAttachments: ((NSPasteboard) -> Bool)?
     var isEnabled = true
     var fontSize: CGFloat = 17
     var minimumHeight: CGFloat = 50
@@ -21,11 +22,17 @@ struct GrowingTextEditor: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
         scrollView.borderType = .noBorder
+        // The enclosing quick-query surface owns image drops. Native text views
+        // otherwise become a competing drag destination and split the panel's
+        // drop target around the editor bounds.
+        scrollView.unregisterDraggedTypes()
 
         let textView = SubmitTextView()
+        textView.unregisterDraggedTypes()
         textView.delegate = context.coordinator
         textView.onSubmit = onSubmit
         textView.onEscapeWhenEmpty = onEscapeWhenEmpty
+        textView.onPasteAttachments = onPasteAttachments
         textView.drawsBackground = false
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -64,6 +71,7 @@ struct GrowingTextEditor: NSViewRepresentable {
         if textView.string != text { textView.string = text }
         textView.onSubmit = onSubmit
         textView.onEscapeWhenEmpty = onEscapeWhenEmpty
+        textView.onPasteAttachments = onPasteAttachments
         textView.font = .systemFont(ofSize: fontSize, weight: .regular)
         textView.textContainerInset = NSSize(width: 2, height: verticalTextInset)
         textView.isEditable = isEnabled
@@ -104,6 +112,12 @@ struct GrowingTextEditor: NSViewRepresentable {
 final class SubmitTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onEscapeWhenEmpty: (() -> Void)?
+    var onPasteAttachments: ((NSPasteboard) -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        if onPasteAttachments?(NSPasteboard.general) == true { return }
+        super.paste(sender)
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == UInt16(kVK_Return), !event.modifierFlags.contains(.shift) {

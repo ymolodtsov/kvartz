@@ -52,7 +52,7 @@ actor LLMService {
             body: [
                 "model": config.model,
                 "instructions": systemPrompt,
-                "input": apiMessages(messages),
+                "input": ProviderMessagePayloads.openAIResponses(messages),
                 "max_output_tokens": 320
             ]
         )
@@ -77,7 +77,7 @@ actor LLMService {
                 "model": config.model,
                 "max_tokens": 320,
                 "system": systemPrompt,
-                "messages": apiMessages(messages)
+                "messages": ProviderMessagePayloads.anthropic(messages)
             ]
         )
         let text = (json["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? ""
@@ -95,12 +95,7 @@ actor LLMService {
             headers: ["x-goog-api-key": config.apiKey],
             body: [
                 "systemInstruction": ["parts": [["text": systemPrompt]]],
-                "contents": messages.map { message in
-                    [
-                        "role": message.role == .assistant ? "model" : "user",
-                        "parts": [["text": message.content]]
-                    ]
-                },
+                "contents": ProviderMessagePayloads.gemini(messages),
                 "generationConfig": ["maxOutputTokens": 320]
             ]
         )
@@ -141,7 +136,8 @@ actor LLMService {
             body: [
                 "model": config.model,
                 "max_tokens": 320,
-                "messages": [["role": "system", "content": systemPrompt]] + apiMessages(messages)
+                "messages": [["role": "system", "content": systemPrompt]]
+                    + ProviderMessagePayloads.openAIChat(messages)
             ]
         )
         let choices = json["choices"] as? [[String: Any]]
@@ -162,7 +158,8 @@ actor LLMService {
                 "model": config.model,
                 "stream": false,
                 "options": ["num_predict": 320],
-                "messages": [["role": "system", "content": systemPrompt]] + apiMessages(messages)
+                "messages": [["role": "system", "content": systemPrompt]]
+                    + ProviderMessagePayloads.ollama(messages)
             ]
         )
         let message = json["message"] as? [String: Any]
@@ -173,10 +170,6 @@ actor LLMService {
     private func endpoint(_ baseURL: String, _ path: String) -> URL {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: "\(trimmed)/\(path)")!
-    }
-
-    private func apiMessages(_ messages: [ConversationMessage]) -> [[String: String]] {
-        messages.map { ["role": $0.role.rawValue, "content": $0.content] }
     }
 
     private func post(url: URL, headers: [String: String], body: [String: Any]) async throws -> [String: Any] {
@@ -203,6 +196,98 @@ actor LLMService {
         }
         return json
     }
+}
+
+enum ProviderMessagePayloads {
+    static func openAIResponses(_ messages: [ConversationMessage]) -> [[String: Any]] {
+        messages.map { message in
+            guard !message.attachments.isEmpty else {
+                return ["role": message.role.rawValue, "content": message.content]
+            }
+            var content: [[String: Any]] = []
+            if !message.content.isEmpty {
+                content.append(["type": "input_text", "text": message.content])
+            }
+            content.append(contentsOf: message.attachments.map { attachment in
+                ["type": "input_image", "image_url": attachment.dataURL]
+            })
+            return ["role": message.role.rawValue, "content": content]
+        }
+    }
+
+    static func anthropic(_ messages: [ConversationMessage]) -> [[String: Any]] {
+        messages.map { message in
+            guard !message.attachments.isEmpty else {
+                return ["role": message.role.rawValue, "content": message.content]
+            }
+            var content: [[String: Any]] = []
+            if !message.content.isEmpty {
+                content.append(["type": "text", "text": message.content])
+            }
+            content.append(contentsOf: message.attachments.map { attachment in
+                [
+                    "type": "image",
+                    "source": [
+                        "type": "base64",
+                        "media_type": attachment.mediaType,
+                        "data": attachment.base64
+                    ]
+                ]
+            })
+            return ["role": message.role.rawValue, "content": content]
+        }
+    }
+
+    static func gemini(_ messages: [ConversationMessage]) -> [[String: Any]] {
+        messages.map { message in
+            var parts: [[String: Any]] = []
+            if !message.content.isEmpty {
+                parts.append(["text": message.content])
+            }
+            parts.append(contentsOf: message.attachments.map { attachment in
+                [
+                    "inline_data": [
+                        "mime_type": attachment.mediaType,
+                        "data": attachment.base64
+                    ]
+                ]
+            })
+            return [
+                "role": message.role == .assistant ? "model" : "user",
+                "parts": parts
+            ]
+        }
+    }
+
+    static func openAIChat(_ messages: [ConversationMessage]) -> [[String: Any]] {
+        messages.map { message in
+            guard !message.attachments.isEmpty else {
+                return ["role": message.role.rawValue, "content": message.content]
+            }
+            var content: [[String: Any]] = []
+            if !message.content.isEmpty {
+                content.append(["type": "text", "text": message.content])
+            }
+            content.append(contentsOf: message.attachments.map { attachment in
+                ["type": "image_url", "image_url": ["url": attachment.dataURL]]
+            })
+            return ["role": message.role.rawValue, "content": content]
+        }
+    }
+
+    static func ollama(_ messages: [ConversationMessage]) -> [[String: Any]] {
+        messages.map { message in
+            var payload: [String: Any] = [
+                "role": message.role.rawValue,
+                "content": message.content
+            ]
+            if !message.attachments.isEmpty {
+                payload["images"] = message.attachments.map(\.base64)
+            }
+            return payload
+        }
+    }
+
 }
 
 enum LLMError: LocalizedError {

@@ -140,7 +140,7 @@ actor CodexProvider {
         try session.start()
         _ = try await session.request(
             method: "initialize",
-            params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.1"]]
+            params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.2"]]
         )
         try session.notify(method: "initialized", params: [:])
         return session

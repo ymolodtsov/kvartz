@@ -339,7 +339,7 @@ struct SettingsView: View {
                     Spacer()
                     Link(
                         "Check for Updates",
-                        destination: URL(string: "https://github.com/ymolodtsov/kvartz/tree/main/Builds")!
+                        destination: URL(string: "https://github.com/ymolodtsov/kvartz/releases/latest")!
                     )
                     .frame(minHeight: 40)
                     Button("Quit Kvartz", role: .destructive) {

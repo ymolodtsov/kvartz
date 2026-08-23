@@ -117,7 +117,7 @@ func estimatedSubmittedMessageHeight(
             ).height
         )
     }
-    let attachmentHeight: CGFloat = hasAttachments ? 48 : 0
+    let attachmentHeight: CGFloat = hasAttachments ? QuickQueryLayout.attachmentChipSize : 0
     let contentSpacing: CGFloat = textHeight > 0 && hasAttachments ? 9 : 0
     return max(44, textHeight + attachmentHeight + contentSpacing + 20)
 }
@@ -321,7 +321,7 @@ final class QueryPanelController: NSWindowController {
         let wrappedLines = ceil(CGFloat(text.count) / widthInCharacters)
         let attachmentTurns = model.conversation.filter { !$0.attachments.isEmpty }.count
             + (model.pendingAttachments.isEmpty ? 0 : 1)
-        let attachmentHeight = CGFloat(attachmentTurns * 62)
+        let attachmentHeight = CGFloat(attachmentTurns) * (QuickQueryLayout.attachmentChipSize + 14)
         let contentHeight = min(
             max(
                 92,

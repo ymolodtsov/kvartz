@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 enum QuickQueryLayout {
     static let activeEditorVerticalPadding: CGFloat = 8
+    static let attachmentChipSize: CGFloat = 30
     static let attachmentTrayHeight: CGFloat = 46
     static let rootChromeHeight: CGFloat = 90
     static let conversationChromeHeight: CGFloat = 84
@@ -298,15 +299,6 @@ struct QuickQueryView: View {
                     .onChange(of: pendingMessageKey) { _, messageKey in
                         guard !messageKey.isEmpty else { return }
                         let anchor = userMessageAnchor(index: model.conversation.count)
-                        DispatchQueue.main.async {
-                            withAnimation(sendAnimation) {
-                                proxy.scrollTo(anchor, anchor: .top)
-                            }
-                        }
-                    }
-                    .onChange(of: model.conversation.count) { previousCount, count in
-                        guard count > previousCount, count > 1 else { return }
-                        let anchor = userMessageAnchor(index: count - 1)
                         DispatchQueue.main.async {
                             withAnimation(sendAnimation) {
                                 proxy.scrollTo(anchor, anchor: .top)
@@ -780,7 +772,10 @@ private struct DraftAttachmentTile: View {
     var body: some View {
         Button(action: onRemove) {
             AttachmentPreviewImage(attachment: attachment)
-                .frame(width: 30, height: 30)
+                .frame(
+                    width: QuickQueryLayout.attachmentChipSize,
+                    height: QuickQueryLayout.attachmentChipSize
+                )
                 .overlay(alignment: .topTrailing) {
                     Image(systemName: "xmark")
                         .font(.system(size: 6, weight: .bold))
@@ -809,7 +804,10 @@ private struct SubmittedAttachmentStrip: View {
             HStack(spacing: 7) {
                 ForEach(attachments) { attachment in
                     AttachmentPreviewImage(attachment: attachment)
-                        .frame(width: 64, height: 48)
+                        .frame(
+                            width: QuickQueryLayout.attachmentChipSize,
+                            height: QuickQueryLayout.attachmentChipSize
+                        )
                         .help(attachment.name)
                         .accessibilityLabel("Attached image, \(attachment.name)")
                 }

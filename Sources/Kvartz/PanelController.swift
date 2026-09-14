@@ -14,11 +14,14 @@ func panelFrameKeepingTop(
     topY: CGFloat,
     visibleFrame: NSRect
 ) -> NSRect {
-    let availableHeight = max(1, topY - visibleFrame.minY)
-    let height = min(preferredHeight, availableHeight)
+    let height = min(max(1, preferredHeight), visibleFrame.height)
+    let width = min(width, visibleFrame.width)
+    // Keep the opening edge until growth reaches the screen, then slide the
+    // panel just enough to use the space on the other side of that edge.
+    let y = min(max(topY - height, visibleFrame.minY), visibleFrame.maxY - height)
     return NSRect(
-        x: currentFrame.origin.x,
-        y: topY - height,
+        x: min(max(currentFrame.minX, visibleFrame.minX), visibleFrame.maxX - width),
+        y: y,
         width: width,
         height: height
     )
@@ -31,11 +34,12 @@ func panelFrameKeepingBottom(
     bottomY: CGFloat,
     visibleFrame: NSRect
 ) -> NSRect {
-    let availableHeight = max(1, visibleFrame.maxY - bottomY)
-    let height = min(preferredHeight, availableHeight)
+    let height = min(max(1, preferredHeight), visibleFrame.height)
+    let width = min(width, visibleFrame.width)
+    let y = min(max(bottomY, visibleFrame.minY), visibleFrame.maxY - height)
     return NSRect(
-        x: currentFrame.origin.x,
-        y: bottomY,
+        x: min(max(currentFrame.minX, visibleFrame.minX), visibleFrame.maxX - width),
+        y: y,
         width: width,
         height: height
     )
@@ -248,7 +252,7 @@ final class QueryPanelController: NSWindowController {
         let generation = resizeGeneration
         isApplyingContentFrame = true
 
-        if animated && panel.isVisible {
+        if animated && panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             NSAnimationContext.runAnimationGroup(
                 { context in
                     context.duration = 0.22
@@ -317,20 +321,19 @@ final class QueryPanelController: NSWindowController {
         let text = model.conversation
             .map { "\($0.question)\n\($0.answer)" }
             .joined(separator: "\n") + model.pendingQuestion
-        let explicitLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
-        let wrappedLines = ceil(CGFloat(text.count) / widthInCharacters)
+        let wrappedLines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(CGFloat.zero) { height, line in
+                height + max(1, ceil(CGFloat(line.count) / widthInCharacters))
+            }
         let attachmentTurns = model.conversation.filter { !$0.attachments.isEmpty }.count
             + (model.pendingAttachments.isEmpty ? 0 : 1)
         let attachmentHeight = CGFloat(attachmentTurns) * (QuickQueryLayout.attachmentChipSize + 14)
-        let contentHeight = min(
-            max(
-                92,
-                max(CGFloat(explicitLines), wrappedLines) * 24
-                    + 28
-                    + bottomFadeClearance
-                    + attachmentHeight
-            ),
-            560
+        let contentHeight = max(
+            92,
+            wrappedLines * 24
+                + CGFloat(model.conversation.count) * 28
+                + bottomFadeClearance
+                + attachmentHeight
         )
         let screenHeight = window?.screen?.visibleFrame.height ?? NSScreen.main?.visibleFrame.height ?? 800
         return min(base + contentHeight + additionalChrome, screenHeight - 64)

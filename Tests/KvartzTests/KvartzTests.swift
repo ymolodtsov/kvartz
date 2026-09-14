@@ -4,6 +4,11 @@ import XCTest
 @testable import Kvartz
 
 final class KvartzTests: XCTestCase {
+    @MainActor
+    func testWindowDragAreaParticipatesInNativeWindowDragging() {
+        XCTAssertTrue(WindowDragView().mouseDownCanMoveWindow)
+    }
+
     func testPanelGrowthKeepsItsTopEdgeFixed() {
         let current = NSRect(x: 120, y: 400, width: 420, height: 142)
         let resized = panelFrameKeepingTop(
@@ -18,7 +23,7 @@ final class KvartzTests: XCTestCase {
         XCTAssertEqual(resized.minY, current.maxY - 184)
     }
 
-    func testPanelGrowthStopsAtTheVisibleScreenBottom() {
+    func testPanelGrowthMovesUpAfterReachingTheVisibleScreenBottom() {
         let current = NSRect(x: 120, y: 40, width: 420, height: 142)
         let resized = panelFrameKeepingTop(
             currentFrame: current,
@@ -28,7 +33,7 @@ final class KvartzTests: XCTestCase {
             visibleFrame: NSRect(x: 0, y: 24, width: 1_440, height: 876)
         )
 
-        XCTAssertEqual(resized.maxY, current.maxY)
+        XCTAssertEqual(resized.height, 260)
         XCTAssertEqual(resized.minY, 24)
     }
 
@@ -44,6 +49,65 @@ final class KvartzTests: XCTestCase {
 
         XCTAssertEqual(resized.minY, current.minY)
         XCTAssertEqual(resized.maxY, current.minY + 260)
+    }
+
+    func testPanelGrowthMovesDownAfterReachingTheVisibleScreenTop() {
+        let visible = NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        let current = NSRect(x: 120, y: 700, width: 420, height: 142)
+        let resized = panelFrameKeepingBottom(
+            currentFrame: current, preferredHeight: 600, width: 420,
+            bottomY: current.minY, visibleFrame: visible
+        )
+
+        XCTAssertEqual(resized.height, 600)
+        XCTAssertEqual(resized.maxY, visible.maxY)
+        XCTAssertTrue(NSContainsRect(visible, resized))
+    }
+
+    func testVeryLongAnswersStayInsideAnOffsetDisplayForEitherAnchor() {
+        let visible = NSRect(x: -1_280, y: -300, width: 1_280, height: 776)
+        let current = NSRect(x: -100, y: 100, width: 420, height: 142)
+        let frames = [
+            panelFrameKeepingTop(
+                currentFrame: current, preferredHeight: 10_000, width: 420,
+                topY: current.maxY, visibleFrame: visible
+            ),
+            panelFrameKeepingBottom(
+                currentFrame: current, preferredHeight: 10_000, width: 420,
+                bottomY: current.minY, visibleFrame: visible
+            )
+        ]
+
+        for frame in frames {
+            XCTAssertEqual(frame.height, visible.height)
+            XCTAssertTrue(NSContainsRect(visible, frame))
+        }
+    }
+
+    func testPanelReturnsToOpeningAnchorWhenContentShrinks() {
+        let visible = NSRect(x: 0, y: 24, width: 1_440, height: 876)
+        let expanded = panelFrameKeepingTop(
+            currentFrame: NSRect(x: 120, y: 100, width: 420, height: 142),
+            preferredHeight: 700, width: 420, topY: 242, visibleFrame: visible
+        )
+        let shrunk = panelFrameKeepingTop(
+            currentFrame: expanded, preferredHeight: 142, width: 420,
+            topY: 242, visibleFrame: visible
+        )
+
+        XCTAssertEqual(shrunk.maxY, 242)
+        XCTAssertEqual(shrunk.height, 142)
+    }
+
+    func testLongSubmittedQuestionsCannotCoverTheAnswerViewport() {
+        let question = "Who are all these people?\n\nThe Future of Engineering\n1st Oct, 4:30–5:10pm, Main Stage 2\nRussell Tham, Azadeh Pak, Jacomo Corbo, Laura Modiano\nModerated by Anisah\nhttps://summit.sifted.eu/sifted-summit-2026-agenda/cursor-claude-future-engineering"
+        let height = estimatedSubmittedMessageHeight(question: question, hasAttachments: false)
+
+        for viewportHeight: CGFloat in [100, 250, 500, 900] {
+            XCTAssertFalse(QuickQueryLayout.shouldPinMessage(height: height, viewportHeight: viewportHeight))
+        }
+        XCTAssertTrue(QuickQueryLayout.shouldPinMessage(height: 44, viewportHeight: 250))
+        XCTAssertFalse(QuickQueryLayout.shouldPinMessage(height: 44, viewportHeight: 100))
     }
 
     func testPanelOpensBelowCursorWhenThereIsRoom() {

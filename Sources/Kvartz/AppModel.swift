@@ -251,6 +251,14 @@ final class AppModel: ObservableObject {
     private func revealAnswer() {
         typingTask?.cancel()
         displayedAnswer = ""
+        // Re-parsing a large Markdown response on every reveal tick blocks
+        // layout and scrolling. Show large replies in one update instead.
+        guard answer.count <= 8_000,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            displayedAnswer = answer
+            finishAnswerReveal()
+            return
+        }
         let characters = Array(answer)
         let chunkSize = max(1, characters.count / 180)
         typingTask = Task {
@@ -263,11 +271,15 @@ final class AppModel: ObservableObject {
             }
             if !Task.isCancelled {
                 displayedAnswer = answer
-                isRevealingAnswer = false
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: .kvartzFocusFollowUp, object: nil)
-                }
+                finishAnswerReveal()
             }
+        }
+    }
+
+    private func finishAnswerReveal() {
+        isRevealingAnswer = false
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .kvartzFocusFollowUp, object: nil)
         }
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import KvartzUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -8,6 +9,28 @@ enum QuickQueryLayout {
     static let attachmentTrayHeight: CGFloat = 46
     static let rootChromeHeight: CGFloat = 90
     static let conversationChromeHeight: CGFloat = 84
+    static let maximumPinnedMessageHeight: CGFloat = 160
+
+    static func shouldPinMessage(height: CGFloat, viewportHeight: CGFloat) -> Bool {
+        // A pinned prompt must leave most of the viewport available for its answer.
+        height <= min(maximumPinnedMessageHeight, viewportHeight * 0.35)
+    }
+}
+
+struct WindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowDragView {
+        WindowDragView()
+    }
+
+    func updateNSView(_ nsView: WindowDragView, context: Context) {}
+}
+
+final class WindowDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
 }
 
 struct QuickQueryView: View {
@@ -19,6 +42,7 @@ struct QuickQueryView: View {
     @ObservedObject var model: AppModel
     let onClose: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Namespace private var sendTransitionNamespace
     @State private var didCopy = false
     @State private var copyConfirmationGeneration = 0
@@ -83,7 +107,9 @@ struct QuickQueryView: View {
             .environment(\.colorScheme, .dark)
             .fixedSize()
 
-            Spacer()
+            WindowDragArea()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityHidden(true)
 
             Button {
                 NotificationCenter.default.post(name: .kvartzOpenSettings, object: nil)
@@ -168,8 +194,12 @@ struct QuickQueryView: View {
 
     @ViewBuilder
     private var phaseContent: some View {
-        switch model.phase {
-        case .ready:
+        // Preserve the ScrollView's identity across requests and replies so its
+        // offset and change handlers survive follow-up submissions.
+        if model.phase == .loading || model.phase == .answer || !model.conversation.isEmpty {
+            answerView
+                .transition(.opacity)
+        } else if model.phase == .ready {
             if model.configuredProviders.isEmpty {
                 HStack(spacing: 11) {
                     Image(systemName: "sparkles")
@@ -199,18 +229,8 @@ struct QuickQueryView: View {
                 .padding(10)
                 .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-        case .loading:
-            answerView
-                .transition(.opacity)
-        case .answer:
-            answerView
-                .transition(.opacity)
-        case .error:
-            if model.conversation.isEmpty {
-                errorView
-            } else {
-                answerView
-            }
+        } else if case .error = model.phase {
+            errorView
         }
     }
 
@@ -221,12 +241,16 @@ struct QuickQueryView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                             ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
-                                if shouldPinConversationTurn(at: index) {
+                                let headerHeight = submittedMessageHeight(
+                                    turn.question, attachments: turn.attachments, viewportWidth: viewport.size.width
+                                )
+                                if shouldPinConversationTurn(at: index)
+                                    && QuickQueryLayout.shouldPinMessage(height: headerHeight, viewportHeight: viewport.size.height) {
                                     Section {
                                         conversationAnswer(
                                             for: index,
                                             turn: turn,
-                                            fadesUnderPinnedHeader: true
+                                            pinnedHeaderHeight: headerHeight
                                         )
                                     } header: {
                                         userMessageHeader(
@@ -247,37 +271,29 @@ struct QuickQueryView: View {
                                         conversationAnswer(
                                             for: index,
                                             turn: turn,
-                                            fadesUnderPinnedHeader: false
+                                            pinnedHeaderHeight: nil
                                         )
                                     }
                                 }
                             }
 
                             if !model.pendingQuestion.isEmpty || !model.pendingAttachments.isEmpty {
-                                Section {
-                                    ProcessingView()
-                                        .frame(height: 44)
-                                        .frame(
-                                            minHeight: max(44, viewport.size.height - 52),
-                                            alignment: .top
-                                        )
-                                        .padding(.top, 4)
-                                        .padding(.bottom, 52)
-                                        .mask {
-                                            PinnedHeaderContentMask(
-                                                headerHeight: estimatedSubmittedMessageHeight(
-                                                    question: model.pendingQuestion,
-                                                    hasAttachments: !model.pendingAttachments.isEmpty
-                                                )
-                                            )
-                                        }
-                                } header: {
-                                    userMessageHeader(
-                                        model.pendingQuestion,
-                                        attachments: model.pendingAttachments,
-                                        index: model.conversation.count,
-                                        isPending: true
-                                    )
+                                let headerHeight = submittedMessageHeight(
+                                    model.pendingQuestion,
+                                    attachments: model.pendingAttachments,
+                                    viewportWidth: viewport.size.width
+                                )
+                                if QuickQueryLayout.shouldPinMessage(height: headerHeight, viewportHeight: viewport.size.height) {
+                                    Section {
+                                        pendingProcessing(viewportHeight: viewport.size.height, pinnedHeaderHeight: headerHeight)
+                                    } header: {
+                                        pendingMessageHeader
+                                    }
+                                } else {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        pendingMessageHeader
+                                        pendingProcessing(viewportHeight: viewport.size.height, pinnedHeaderHeight: nil)
+                                    }
                                 }
                             }
                         }
@@ -305,6 +321,24 @@ struct QuickQueryView: View {
                             }
                         }
                     }
+                    .onChange(of: model.conversation.count) { _, count in
+                        guard let turn = model.conversation.last else { return }
+                        let headerHeight = submittedMessageHeight(
+                            turn.question, attachments: turn.attachments, viewportWidth: viewport.size.width
+                        )
+                        // The panel may still be growing from its loading height.
+                        // Use the fixed header limit here, not that temporary viewport.
+                        let anchor = headerHeight <= QuickQueryLayout.maximumPinnedMessageHeight
+                            ? userMessageAnchor(index: count - 1)
+                            : answerAnchor(index: count - 1)
+                        // Move once when a reply arrives. Reveal updates must never
+                        // override a reader scrolling through the conversation.
+                        DispatchQueue.main.async {
+                            withAnimation(sendAnimation) {
+                                proxy.scrollTo(anchor, anchor: .top)
+                            }
+                        }
+                    }
                     .transaction { transaction in
                         // SwiftUI otherwise keeps an edge anchored while the streaming
                         // answer changes size, which overrides an in-progress user scroll.
@@ -314,7 +348,7 @@ struct QuickQueryView: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.automatic)
 
             if !model.conversation.isEmpty {
                 HStack(spacing: 10) {
@@ -426,6 +460,7 @@ struct QuickQueryView: View {
                     .font(.system(size: 16))
                     .foregroundStyle(.white.opacity(0.88))
                     .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
             if !attachments.isEmpty {
@@ -437,7 +472,7 @@ struct QuickQueryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color(white: 0.12))
+                    .fill(Color(white: 0.12).opacity(reduceTransparency ? 1 : 0.72))
                     .overlay {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .fill(Color.white.opacity(0.045))
@@ -494,20 +529,50 @@ struct QuickQueryView: View {
     private func conversationAnswer(
         for index: Int,
         turn: ConversationTurn,
-        fadesUnderPinnedHeader: Bool
+        pinnedHeaderHeight: CGFloat?
     ) -> some View {
         let content = renderedAnswer(for: index, turn: turn)
+            .id(answerAnchor(index: index))
             .padding(.top, 14)
             .padding(.bottom, answerBottomPadding(for: index))
 
-        if fadesUnderPinnedHeader {
+        if let pinnedHeaderHeight {
             content.mask {
-                PinnedHeaderContentMask(
-                    headerHeight: estimatedSubmittedMessageHeight(
-                        question: turn.question,
-                        hasAttachments: !turn.attachments.isEmpty
-                    )
-                )
+                PinnedHeaderContentMask(headerHeight: pinnedHeaderHeight)
+            }
+        } else {
+            content
+        }
+    }
+
+    private func submittedMessageHeight(_ question: String, attachments: [QueryAttachment], viewportWidth: CGFloat) -> CGFloat {
+        estimatedSubmittedMessageHeight(
+            question: question,
+            hasAttachments: !attachments.isEmpty,
+            contentWidth: max(1, viewportWidth - 32)
+        )
+    }
+
+    private var pendingMessageHeader: some View {
+        userMessageHeader(
+            model.pendingQuestion,
+            attachments: model.pendingAttachments,
+            index: model.conversation.count,
+            isPending: true
+        )
+    }
+
+    @ViewBuilder
+    private func pendingProcessing(viewportHeight: CGFloat, pinnedHeaderHeight: CGFloat?) -> some View {
+        let content = ProcessingView()
+            .frame(height: 44)
+            .frame(minHeight: max(44, viewportHeight - (pinnedHeaderHeight ?? 0)), alignment: .top)
+            .padding(.top, 4)
+            .padding(.bottom, 52)
+
+        if let pinnedHeaderHeight {
+            content.mask {
+                PinnedHeaderContentMask(headerHeight: pinnedHeaderHeight)
             }
         } else {
             content
@@ -619,6 +684,10 @@ struct QuickQueryView: View {
         "user-message-\(index)"
     }
 
+    private func answerAnchor(index: Int) -> String {
+        "answer-\(index)"
+    }
+
     private var sendAnimation: Animation {
         reduceMotion ? .easeOut(duration: 0.12) : .smooth(duration: 0.32)
     }
@@ -661,6 +730,7 @@ struct QuickQueryView: View {
             .font(.system(size: 16, weight: .regular))
             .foregroundStyle(.white.opacity(0.93))
             .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

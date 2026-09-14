@@ -5,6 +5,36 @@ import XCTest
 
 final class KvartzTests: XCTestCase {
     @MainActor
+    func testLaunchAndReopenSuppressAutomaticWindowPresentation() {
+        let delegate = AppDelegate()
+        let app = NSApplication.shared
+
+        XCTAssertFalse(delegate.applicationShouldOpenUntitledFile(app))
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(app, hasVisibleWindows: true))
+        XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(app))
+    }
+
+    @MainActor
+    func testNativeLifecyclePreservesSettingsAndTextEditingShortcuts() throws {
+        let delegate = AppDelegate()
+        let menu = delegate.makeMainMenu()
+        let appMenu = try XCTUnwrap(menu.items.first?.submenu)
+        let settings = try XCTUnwrap(appMenu.items.first(where: { $0.keyEquivalent == "," }))
+        XCTAssertTrue(settings.target === delegate)
+
+        let editMenu = try XCTUnwrap(menu.items.last?.submenu)
+        for (key, action) in [("x", "cut:"), ("c", "copy:"), ("v", "paste:"), ("a", "selectAll:")] {
+            let item = try XCTUnwrap(editMenu.items.first(where: { $0.keyEquivalent == key }))
+            XCTAssertEqual(item.action, NSSelectorFromString(action))
+            XCTAssertEqual(item.keyEquivalentModifierMask, .command)
+            XCTAssertNil(item.target, "Editing must follow the first responder")
+        }
+        let redo = try XCTUnwrap(editMenu.items.first(where: { $0.action == NSSelectorFromString("redo:") }))
+        XCTAssertEqual(redo.keyEquivalentModifierMask, [.command, .shift])
+    }
+
+    @MainActor
     func testWindowDragAreaParticipatesInNativeWindowDragging() {
         XCTAssertTrue(WindowDragView().mouseDownCanMoveWindow)
     }

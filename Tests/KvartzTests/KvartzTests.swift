@@ -394,13 +394,79 @@ final class KvartzTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceRoot.appendingPathComponent("Assets/Kvartz.icns").path))
     }
 
-    func testCodexAutodetectionPrefersWorkingChatGPTBinary() throws {
-        let bundled = "/Applications/ChatGPT.app/Contents/Resources/codex"
-        guard FileManager.default.isExecutableFile(atPath: bundled) else {
-            throw XCTSkip("ChatGPT's bundled Codex executable is not installed")
+    func testCodexAutodetectionSupportsDesktopBundleLayouts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for directory in ["Applications", "Users/test/Applications"] {
+            for app in ["ChatGPT.app", "Codex.app"] {
+                for layout in ["codex-cli/CodexCLI.app/Contents/MacOS/codex", "codex-cli/bin/codex", "codex"] {
+                    let applications = root.appendingPathComponent(directory)
+                    let binary = applications.appendingPathComponent("\(app)/Contents/Resources/\(layout)")
+                    try makeCodexExecutable(at: binary)
+                    let detected = try CodexRPCSession.locateExecutable(
+                        configuredPath: "", bundledResourcesURL: nil,
+                        applicationDirectories: [applications], searchPath: "/usr/bin:/bin"
+                    )
+                    XCTAssertEqual(detected.path, binary.path)
+                    try FileManager.default.removeItem(at: binary)
+                }
+            }
         }
-        UserDefaults.standard.removeObject(forKey: "codexExecutable")
-        XCTAssertEqual(try CodexRPCSession.locateExecutable().path, bundled)
+    }
+
+    func testCodexAutodetectionSkipsBrokenBinary() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("ChatGPT.app/Contents/Resources")
+        try makeCodexExecutable(at: resources.appendingPathComponent("codex-cli/CodexCLI.app/Contents/MacOS/codex"), exitCode: 1)
+        let fallback = resources.appendingPathComponent("codex")
+        try makeCodexExecutable(at: fallback)
+
+        XCTAssertEqual(try CodexRPCSession.locateExecutable(
+            configuredPath: "", bundledResourcesURL: nil,
+            applicationDirectories: [root], searchPath: ""
+        ).path, fallback.path)
+    }
+
+    func testCodexConfiguredPathTakesPrecedenceAndReportsInvalidOverride() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let custom = root.appendingPathComponent("custom codex")
+        try makeCodexExecutable(at: custom)
+        try makeCodexExecutable(at: root.appendingPathComponent("codex"))
+
+        XCTAssertEqual(try CodexRPCSession.locateExecutable(
+            configuredPath: " \(custom.path)\n", bundledResourcesURL: root
+        ).path, custom.path)
+        try FileManager.default.removeItem(at: custom)
+        XCTAssertThrowsError(try CodexRPCSession.locateExecutable(
+            configuredPath: custom.path, bundledResourcesURL: root
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("configured Codex executable"))
+        }
+    }
+
+    private func makeCodexExecutable(at url: URL, exitCode: Int = 0) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\n[ \"$1\" = \"--version\" ] || exit 2\nexit \(exitCode)\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    func testInstalledCodexAppServerConnection() async throws {
+        guard ProcessInfo.processInfo.environment["KVARTZ_TEST_INSTALLED_CODEX"] == "1" else {
+            throw XCTSkip("Set KVARTZ_TEST_INSTALLED_CODEX=1 to test the locally installed Codex")
+        }
+        let executable = try CodexRPCSession.locateExecutable(configuredPath: "", searchPath: "/usr/bin:/bin")
+        let session = CodexRPCSession(executableURL: executable)
+        try session.start()
+        defer { session.stop() }
+        _ = try await session.request(method: "initialize", params: [
+            "clientInfo": ["name": "kvartz_tests", "title": "Kvartz Tests", "version": "0.1.4"]
+        ])
+        try session.notify(method: "initialized", params: [:])
+        let result = try await session.request(method: "model/list", params: ["limit": 1])
+        XCTAssertFalse((result["data"] as? [[String: Any]] ?? []).isEmpty)
     }
 
     func testCodexOutputStripsInternalCitationAnnotations() {

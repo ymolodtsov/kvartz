@@ -220,12 +220,18 @@ final class CodexRPCSession: @unchecked Sendable {
         self.notificationContinuation = continuation
     }
 
-    static func locateExecutable() throws -> URL {
-        let saved = NSString(
-            string: UserDefaults.standard.string(forKey: "codexExecutable") ?? ""
-        ).expandingTildeInPath
-        let bundleCandidate = Bundle.main.resourceURL?.appendingPathComponent("codex").path
-        let envCandidates = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+    static func locateExecutable(
+        configuredPath: String = UserDefaults.standard.string(forKey: "codexExecutable") ?? "",
+        bundledResourcesURL: URL? = Bundle.main.resourceURL,
+        applicationDirectories: [URL] = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        ],
+        searchPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    ) throws -> URL {
+        let saved = NSString(string: configuredPath.trimmingCharacters(in: .whitespacesAndNewlines)).expandingTildeInPath
+        let bundleCandidate = bundledResourcesURL?.appendingPathComponent("codex").path
+        let envCandidates = searchPath
             .split(separator: ":").map { String($0) + "/codex" }
 
         if !saved.isEmpty {
@@ -235,10 +241,20 @@ final class CodexRPCSession: @unchecked Sendable {
             return URL(fileURLWithPath: saved)
         }
 
-        let candidates = [
-            bundleCandidate ?? "",
-            "/Applications/ChatGPT.app/Contents/Resources/codex",
-            "/Applications/Codex.app/Contents/Resources/codex",
+        // Current desktop builds embed the CLI in a nested app; older builds
+        // shipped it directly in Resources. Prefer the native binary to wrappers.
+        let desktopCandidates = applicationDirectories.flatMap { directory in
+            ["ChatGPT.app", "Codex.app"].flatMap { app in
+                [
+                    "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                    "codex-cli/bin/codex",
+                    "codex"
+                ].map { relativePath in
+                    directory.appendingPathComponent("\(app)/Contents/Resources/\(relativePath)").path
+                }
+            }
+        }
+        let candidates = [bundleCandidate ?? ""] + desktopCandidates + [
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
             NSString(string: "~/.local/bin/codex").expandingTildeInPath,
@@ -256,8 +272,8 @@ final class CodexRPCSession: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["--version"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             process.waitUntilExit()

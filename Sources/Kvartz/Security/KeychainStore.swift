@@ -13,8 +13,17 @@ final class KeychainStore: @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
-        guard !value.isEmpty else { return }
+        if value.isEmpty {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status) }
+            return
+        }
+
+        // Keep the existing credential if Keychain rejects the replacement.
+        let attributes = [kSecValueData as String: Data(value.utf8)]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else { throw KeychainError(updateStatus) }
 
         var item = query
         item[kSecValueData as String] = Data(value.utf8)

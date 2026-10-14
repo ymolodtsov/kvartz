@@ -168,12 +168,13 @@ final class QueryPanelController: NSWindowController {
             rootView: QuickQueryView(model: model) { [weak self] in self?.closePanel() }
         )
 
-        Publishers.Merge4(
-            model.$editorHeight.dropFirst().map { _ in () },
-            model.$followUpEditorHeight.dropFirst().map { _ in () },
-            model.$draftAttachments.dropFirst().map { _ in () },
-            model.$pendingAttachments.dropFirst().map { _ in () }
-        )
+        Publishers.MergeMany([
+            model.$editorHeight.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$followUpEditorHeight.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$draftAttachments.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$pendingAttachments.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$attachmentError.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ])
             .debounce(for: .milliseconds(10), scheduler: RunLoop.main)
             .sink { [weak self] in self?.resizeToContent(animated: true) }
             .store(in: &cancellables)
@@ -206,7 +207,10 @@ final class QueryPanelController: NSWindowController {
         savePosition(of: panel)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        NotificationCenter.default.post(name: .kvartzFocusQuery, object: nil)
+        NotificationCenter.default.post(
+            name: model.conversation.isEmpty ? .kvartzFocusQuery : .kvartzFocusFollowUp,
+            object: nil
+        )
     }
 
     private func closePanel() {
@@ -276,7 +280,7 @@ final class QueryPanelController: NSWindowController {
         let isShowingInitialEditor = model.conversation.isEmpty
             && model.pendingQuestion.isEmpty
             && model.pendingAttachments.isEmpty
-        let draftAttachmentHeight = model.draftAttachments.isEmpty
+        let draftAttachmentHeight = model.draftAttachments.isEmpty && model.attachmentError.isEmpty
             ? 0
             : QuickQueryLayout.attachmentTrayHeight
         // The initial editor has two root-stack gaps. Once the conversation starts,

@@ -36,7 +36,6 @@ final class WindowDragView: NSView {
 struct QuickQueryView: View {
     private enum SendTransition {
         static let initial = "initial-user-message"
-        static let followUp = "follow-up-user-message"
     }
 
     @ObservedObject var model: AppModel
@@ -71,6 +70,10 @@ struct QuickQueryView: View {
         .animation(.easeOut(duration: reduceMotion ? 0.01 : 0.15), value: isDropTargeted)
         .padding(12)
         .environment(\.colorScheme, .dark)
+        .onChange(of: model.answer) { _, _ in
+            copyConfirmationGeneration += 1
+            didCopy = false
+        }
     }
 
     private var header: some View {
@@ -147,7 +150,7 @@ struct QuickQueryView: View {
 
     private var queryEditor: some View {
         VStack(spacing: 0) {
-            if !model.draftAttachments.isEmpty {
+            if !model.draftAttachments.isEmpty || !model.attachmentError.isEmpty {
                 draftAttachmentStrip
             }
 
@@ -240,59 +243,41 @@ struct QuickQueryView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(Array(model.conversation.enumerated()), id: \.element.id) { index, turn in
+                            ForEach(Array(model.visibleTurns.enumerated()), id: \.element.id) { index, turn in
                                 let headerHeight = submittedMessageHeight(
                                     turn.question, attachments: turn.attachments, viewportWidth: viewport.size.width
                                 )
-                                if shouldPinConversationTurn(at: index)
-                                    && QuickQueryLayout.shouldPinMessage(height: headerHeight, viewportHeight: viewport.size.height) {
-                                    Section {
-                                        conversationAnswer(
-                                            for: index,
-                                            turn: turn,
-                                            pinnedHeaderHeight: headerHeight
-                                        )
-                                    } header: {
-                                        userMessageHeader(
-                                            turn.question,
-                                            attachments: turn.attachments,
-                                            index: index,
-                                            isPending: false
-                                        )
-                                    }
-                                } else {
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        userMessageHeader(
-                                            turn.question,
-                                            attachments: turn.attachments,
-                                            index: index,
-                                            isPending: false
-                                        )
-                                        conversationAnswer(
-                                            for: index,
-                                            turn: turn,
-                                            pinnedHeaderHeight: nil
-                                        )
-                                    }
-                                }
-                            }
-
-                            if !model.pendingQuestion.isEmpty || !model.pendingAttachments.isEmpty {
-                                let headerHeight = submittedMessageHeight(
-                                    model.pendingQuestion,
-                                    attachments: model.pendingAttachments,
-                                    viewportWidth: viewport.size.width
+                                let pinsHeader = QuickQueryLayout.shouldPinMessage(
+                                    height: headerHeight, viewportHeight: viewport.size.height
                                 )
-                                if QuickQueryLayout.shouldPinMessage(height: headerHeight, viewportHeight: viewport.size.height) {
-                                    Section {
-                                        pendingProcessing(viewportHeight: viewport.size.height, pinnedHeaderHeight: headerHeight)
-                                    } header: {
-                                        pendingMessageHeader
+                                let isPending = turn.id == model.pendingTurnID
+
+                                // Keep each turn's section and scroll identity stable while
+                                // pending content becomes an answer and new turns arrive.
+                                Section {
+                                    if !pinsHeader {
+                                        userMessageHeader(
+                                            turn.question, attachments: turn.attachments,
+                                            index: index, isPending: isPending
+                                        )
                                     }
-                                } else {
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        pendingMessageHeader
-                                        pendingProcessing(viewportHeight: viewport.size.height, pinnedHeaderHeight: nil)
+                                    if isPending {
+                                        pendingProcessing(
+                                            viewportHeight: viewport.size.height,
+                                            pinnedHeaderHeight: pinsHeader ? headerHeight : nil
+                                        )
+                                    } else {
+                                        conversationAnswer(
+                                            for: index, turn: turn,
+                                            pinnedHeaderHeight: pinsHeader ? headerHeight : nil
+                                        )
+                                    }
+                                } header: {
+                                    if pinsHeader {
+                                        userMessageHeader(
+                                            turn.question, attachments: turn.attachments,
+                                            index: index, isPending: isPending
+                                        )
                                     }
                                 }
                             }
@@ -312,8 +297,8 @@ struct QuickQueryView: View {
                             .frame(height: 28)
                         }
                     }
-                    .onChange(of: pendingMessageKey) { _, messageKey in
-                        guard !messageKey.isEmpty else { return }
+                    .onChange(of: model.pendingTurnID) { _, requestID in
+                        guard requestID != nil else { return }
                         let anchor = userMessageAnchor(index: model.conversation.count)
                         DispatchQueue.main.async {
                             withAnimation(sendAnimation) {
@@ -403,7 +388,7 @@ struct QuickQueryView: View {
 
     private var followUpEditor: some View {
         VStack(spacing: 0) {
-            if !model.draftAttachments.isEmpty {
+            if !model.draftAttachments.isEmpty || !model.attachmentError.isEmpty {
                 draftAttachmentStrip
             }
 
@@ -445,12 +430,6 @@ struct QuickQueryView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.07), lineWidth: 1)
         }
-        .matchedGeometryEffect(
-            id: SendTransition.followUp,
-            in: sendTransitionNamespace,
-            properties: .frame,
-            isSource: true
-        )
     }
 
     private func submittedQuestion(_ question: String, attachments: [QueryAttachment]) -> some View {
@@ -501,9 +480,11 @@ struct QuickQueryView: View {
             .id(userMessageAnchor(index: index))
             .zIndex(1)
 
-        if isPending {
+        // The follow-up editor returns after every reply. Sharing its geometry
+        // with sent headers can move those headers out of the conversation.
+        if isPending && index == 0 {
             message.matchedGeometryEffect(
-                id: index == 0 ? SendTransition.initial : SendTransition.followUp,
+                id: SendTransition.initial,
                 in: sendTransitionNamespace,
                 properties: .frame,
                 isSource: false
@@ -518,11 +499,6 @@ struct QuickQueryView: View {
             && model.pendingAttachments.isEmpty
             && index == model.conversation.count - 1
         return isFinalSection ? 52 : 14
-    }
-
-    private func shouldPinConversationTurn(at index: Int) -> Bool {
-        let hasPendingMessage = !model.pendingQuestion.isEmpty || !model.pendingAttachments.isEmpty
-        return !hasPendingMessage && index == model.conversation.count - 1
     }
 
     @ViewBuilder
@@ -553,15 +529,6 @@ struct QuickQueryView: View {
         )
     }
 
-    private var pendingMessageHeader: some View {
-        userMessageHeader(
-            model.pendingQuestion,
-            attachments: model.pendingAttachments,
-            index: model.conversation.count,
-            isPending: true
-        )
-    }
-
     @ViewBuilder
     private func pendingProcessing(viewportHeight: CGFloat, pinnedHeaderHeight: CGFloat?) -> some View {
         let content = ProcessingView()
@@ -577,11 +544,6 @@ struct QuickQueryView: View {
         } else {
             content
         }
-    }
-
-    private var pendingMessageKey: String {
-        guard !model.pendingQuestion.isEmpty || !model.pendingAttachments.isEmpty else { return "" }
-        return model.pendingQuestion + model.pendingAttachments.map(\.id.uuidString).joined()
     }
 
     private var draftAttachmentStrip: some View {

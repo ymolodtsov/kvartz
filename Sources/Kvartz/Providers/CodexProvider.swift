@@ -76,6 +76,7 @@ actor CodexProvider {
             method: "thread/start",
             params: [
                 "model": model,
+                "ephemeral": true,
                 "approvalPolicy": "never",
                 "sandbox": "read-only",
                 "serviceName": "kvartz_quick_query"
@@ -111,39 +112,52 @@ actor CodexProvider {
             ]
         )
 
-        var output = ""
+        var output = CodexAnswerAccumulator()
+        var completed = false
         for await event in session.notifications {
             let method = event["method"] as? String
             let params = event["params"] as? [String: Any]
-            if method == "item/agentMessage/delta", let delta = params?["delta"] as? String {
-                output += delta
-            } else if method == "item/completed", output.isEmpty,
+            if method == "item/agentMessage/delta", let delta = params?["delta"] as? String,
+               let id = params?["itemId"] as? String {
+                output.append(delta: delta, id: id)
+            } else if method == "item/completed",
                       let item = params?["item"] as? [String: Any], item["type"] as? String == "agentMessage" {
-                output = item["text"] as? String ?? ""
+                if let id = item["id"] as? String {
+                    output.complete(id: id, text: item["text"] as? String ?? "", phase: item["phase"] as? String)
+                }
             } else if method == "turn/completed" {
                 let turn = params?["turn"] as? [String: Any]
                 if turn?["status"] as? String == "failed" {
                     let error = turn?["error"] as? [String: Any]
                     throw LLMError.codex(error?["message"] as? String ?? "Codex query failed.")
                 }
+                if turn?["status"] as? String == "interrupted" { throw CancellationError() }
+                completed = true
                 break
             }
         }
 
-        guard !output.isEmpty else { throw LLMError.invalidResponse }
-        return CodexOutputSanitizer.stripUnsupportedCitations(from: output)
+        try Task.checkCancellation()
+        guard completed else { throw LLMError.codex("Codex stopped before the answer was complete. Try again.") }
+        guard !output.answer.isEmpty else { throw LLMError.invalidResponse }
+        return CodexOutputSanitizer.stripUnsupportedCitations(from: output.answer)
     }
 
     private func connectedSession() async throws -> CodexRPCSession {
         let executable = try CodexRPCSession.locateExecutable()
         let session = CodexRPCSession(executableURL: executable)
         try session.start()
-        _ = try await session.request(
-            method: "initialize",
-            params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.2"]]
-        )
-        try session.notify(method: "initialized", params: [:])
-        return session
+        do {
+            _ = try await session.request(
+                method: "initialize",
+                params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.4"]]
+            )
+            try session.notify(method: "initialized", params: [:])
+            return session
+        } catch {
+            session.stop()
+            throw error
+        }
     }
 
     private static func accountDescription(_ result: [String: Any]) -> String {
@@ -157,6 +171,29 @@ actor CodexProvider {
         case let type?: return "Connected · \(type)"
         default: return "Connected"
         }
+    }
+}
+
+struct CodexAnswerAccumulator {
+    private var order: [String] = []
+    private var texts: [String: String] = [:]
+    private var phases: [String: String] = [:]
+
+    mutating func append(delta: String, id: String) {
+        if texts[id] == nil { order.append(id) }
+        texts[id, default: ""] += delta
+    }
+
+    mutating func complete(id: String, text: String, phase: String?) {
+        if texts[id] == nil { order.append(id) }
+        texts[id] = text
+        phases[id] = phase
+    }
+
+    var answer: String {
+        let finalIDs = order.filter { phases[$0] == "final_answer" }
+        let answerIDs = finalIDs.isEmpty ? order.filter { phases[$0] == nil } : finalIDs
+        return answerIDs.compactMap { texts[$0] }.joined(separator: "\n\n")
     }
 }
 
@@ -212,9 +249,12 @@ final class CodexRPCSession: @unchecked Sendable {
     private var errorBuffer = Data()
     private var nextID = 1
     private var pending: [Int: CheckedContinuation<JSON, Error>] = [:]
+    private var isFinished = false
+    private let requestTimeout: TimeInterval
 
-    init(executableURL: URL) {
+    init(executableURL: URL, requestTimeout: TimeInterval = 30) {
         self.executableURL = executableURL
+        self.requestTimeout = requestTimeout
         var continuation: AsyncStream<JSON>.Continuation!
         self.notifications = AsyncStream { continuation = $0 }
         self.notificationContinuation = continuation
@@ -309,17 +349,31 @@ final class CodexRPCSession: @unchecked Sendable {
     }
 
     func request(method: String, params: JSON = [:]) async throws -> JSON {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                let id = self.nextID
-                self.nextID += 1
-                self.pending[id] = continuation
-                do {
-                    try self.write(["method": method, "id": id, "params": params])
-                } catch {
-                    self.pending.removeValue(forKey: id)?.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                queue.async { [self] in
+                    guard !self.isFinished else {
+                        continuation.resume(throwing: LLMError.codex("Codex app-server stopped."))
+                        return
+                    }
+                    let id = self.nextID
+                    self.nextID += 1
+                    self.pending[id] = continuation
+                    do {
+                        try self.write(["method": method, "id": id, "params": params])
+                        self.queue.asyncAfter(deadline: .now() + self.requestTimeout) { [weak self] in
+                            guard let self, let pending = self.pending.removeValue(forKey: id) else { return }
+                            pending.resume(throwing: LLMError.codex("Codex did not respond to \(method). Try again."))
+                            self.stop()
+                        }
+                    } catch {
+                        self.pending.removeValue(forKey: id)?.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            self.stop()
         }
     }
 
@@ -366,6 +420,8 @@ final class CodexRPCSession: @unchecked Sendable {
 
     private func finish() {
         queue.async {
+            guard !self.isFinished else { return }
+            self.isFinished = true
             let pending = self.pending
             self.pending.removeAll()
             let details = String(data: self.errorBuffer, encoding: .utf8)?

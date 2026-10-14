@@ -167,9 +167,8 @@ actor LLMService {
         return text
     }
 
-    private func endpoint(_ baseURL: String, _ path: String) -> URL {
-        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: "\(trimmed)/\(path)")!
+    private func endpoint(_ baseURL: String, _ path: String) throws -> URL {
+        try ProviderConfiguration.validatedBaseURL(baseURL).appendingPathComponent(path)
     }
 
     private func post(url: URL, headers: [String: String], body: [String: Any]) async throws -> [String: Any] {

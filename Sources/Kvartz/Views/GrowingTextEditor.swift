@@ -120,6 +120,11 @@ final class SubmitTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Return confirms an input-method composition before it can send a query.
+        guard isEditable, !hasMarkedText() else {
+            super.keyDown(with: event)
+            return
+        }
         if event.keyCode == UInt16(kVK_Return), !event.modifierFlags.contains(.shift) {
             onSubmit?()
             return

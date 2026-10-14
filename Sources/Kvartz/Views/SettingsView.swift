@@ -398,6 +398,10 @@ struct SettingsView: View {
 
     private func activateProvider() {
         do {
+            if selectedProvider.needsAPIKey,
+               configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw LLMError.configuration("Add an API key before using \(selectedProvider.displayName).")
+            }
             try configuration.save()
             if configuration.provider == .codex {
                 UserDefaults.standard.set(codexExecutable, forKey: "codexExecutable")

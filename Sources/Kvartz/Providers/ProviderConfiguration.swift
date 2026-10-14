@@ -110,12 +110,28 @@ struct ProviderConfiguration: Equatable {
     }
 
     func save() throws {
-        saveModel()
-        UserDefaults.standard.set(baseURL, forKey: "provider.\(provider.rawValue).baseURL")
-        if provider.needsAPIKey {
-            try KeychainStore.shared.save(apiKey, account: provider.rawValue)
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LLMError.configuration("Choose a model for \(provider.displayName).")
         }
+        if provider != .codex { _ = try Self.validatedBaseURL(baseURL) }
+        if provider.needsAPIKey {
+            try KeychainStore.shared.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: provider.rawValue)
+        }
+        saveModel()
+        UserDefaults.standard.set(baseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "provider.\(provider.rawValue).baseURL")
         UserDefaults.standard.set(true, forKey: configuredKey)
+    }
+
+    static func validatedBaseURL(_ value: String) throws -> URL {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = components.host, !host.isEmpty,
+              components.query == nil, components.fragment == nil,
+              let url = components.url else {
+            throw LLMError.configuration("Enter a valid http:// or https:// base URL without a query or fragment in Settings.")
+        }
+        return url
     }
 
     func saveModel(to defaults: UserDefaults = .standard) {

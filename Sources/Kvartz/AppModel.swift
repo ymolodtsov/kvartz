@@ -58,6 +58,7 @@ final class AppModel: ObservableObject {
     @Published var phase: Phase = .ready
     @Published private(set) var conversation: [ConversationTurn] = []
     @Published private(set) var pendingQuestion = ""
+    @Published private(set) var pendingTurnID: UUID?
     @Published var systemPrompt: String {
         didSet { PromptPolicy.save(systemPrompt) }
     }
@@ -84,8 +85,18 @@ final class AppModel: ObservableObject {
 
     private var requestTask: Task<Void, Never>?
     private var typingTask: Task<Void, Never>?
+    typealias AnswerRequest = ([ConversationMessage], String, ProviderKind) async throws -> String
+    private let requestAnswer: AnswerRequest
+    private let animatesAnswers: Bool
 
     private init() {
+        requestAnswer = { messages, prompt, provider in
+            try await LLMService.shared.answer(
+                messages: messages, systemPrompt: prompt, provider: provider,
+                configuration: ProviderConfiguration.load(for: provider)
+            )
+        }
+        animatesAnswers = true
         systemPrompt = PromptPolicy.load()
         let savedProvider = UserDefaults.standard.string(forKey: "selectedProvider")
         selectedProvider = ProviderKind(rawValue: savedProvider ?? "") ?? .openAI
@@ -93,6 +104,24 @@ final class AppModel: ObservableObject {
         panelOpeningPosition = PanelOpeningPosition.load()
         refreshConfiguredProviders()
         refreshLaunchAtLoginStatus()
+    }
+
+    // An isolated session can exercise the complete request flow without credentials.
+    init(provider: ProviderKind, animatesAnswers: Bool = false, requestAnswer: @escaping AnswerRequest) {
+        self.requestAnswer = requestAnswer
+        self.animatesAnswers = animatesAnswers
+        systemPrompt = PromptPolicy.defaultSystem
+        selectedProvider = provider
+        activationShortcut = .default
+        panelOpeningPosition = .nearCursor
+        configuredProviders = [provider]
+    }
+
+    var visibleTurns: [ConversationTurn] {
+        guard let pendingTurnID else { return conversation }
+        return conversation + [ConversationTurn(
+            id: pendingTurnID, question: pendingQuestion, answer: "", attachments: pendingAttachments
+        )]
     }
 
     func submit() {
@@ -108,7 +137,7 @@ final class AppModel: ObservableObject {
     }
 
     private func performRequest(question trimmed: String, attachments: [QueryAttachment]) {
-        guard !trimmed.isEmpty || !attachments.isEmpty, phase != .loading else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty, phase != .loading, !isRevealingAnswer else { return }
         guard configuredProviders.contains(selectedProvider) else {
             phase = .error("Configure an AI provider in Settings, then try again.")
             return
@@ -120,6 +149,8 @@ final class AppModel: ObservableObject {
         displayedAnswer = ""
         pendingQuestion = trimmed
         pendingAttachments = attachments
+        let requestID = UUID()
+        pendingTurnID = requestID
         draftAttachments = []
         attachmentError = ""
         phase = .loading
@@ -134,36 +165,43 @@ final class AppModel: ObservableObject {
 
         requestTask = Task {
             do {
-                let result = try await LLMService.shared.answer(
-                    messages: messages,
-                    systemPrompt: prompt,
-                    provider: provider,
-                    configuration: ProviderConfiguration.load(for: provider)
-                )
-                guard !Task.isCancelled else { return }
+                let result = try await requestAnswer(messages, prompt, provider)
+                guard !Task.isCancelled, pendingTurnID == requestID else { return }
+                guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw LLMError.invalidResponse
+                }
                 answer = result.trimmingCharacters(in: .whitespacesAndNewlines)
                 conversation.append(
-                    ConversationTurn(question: trimmed, answer: answer, attachments: attachments)
+                    ConversationTurn(id: requestID, question: trimmed, answer: answer, attachments: attachments)
                 )
                 pendingQuestion = ""
                 pendingAttachments = []
+                pendingTurnID = nil
                 followUpQuery = ""
                 followUpEditorHeight = 44
                 isRevealingAnswer = true
                 phase = .answer
                 revealAnswer()
             } catch is CancellationError {
+                guard !Task.isCancelled, pendingTurnID == requestID else { return }
                 pendingQuestion = ""
                 pendingAttachments = []
-                draftAttachments = attachments
+                pendingTurnID = nil
+                restoreDraftAttachments(attachments)
+                displayedAnswer = answer
                 isRevealingAnswer = false
                 phase = conversation.isEmpty ? .ready : .answer
+                focusEditor()
             } catch {
+                guard !Task.isCancelled, pendingTurnID == requestID else { return }
                 pendingQuestion = ""
                 pendingAttachments = []
-                draftAttachments = attachments
+                pendingTurnID = nil
+                restoreDraftAttachments(attachments)
+                displayedAnswer = answer
                 isRevealingAnswer = false
                 phase = .error(error.localizedDescription)
+                focusEditor()
             }
         }
     }
@@ -185,7 +223,20 @@ final class AppModel: ObservableObject {
         isRevealingAnswer = false
         conversation = []
         pendingQuestion = ""
+        pendingTurnID = nil
         phase = .ready
+    }
+
+    private func restoreDraftAttachments(_ attachments: [QueryAttachment]) {
+        draftAttachments = Array((attachments + draftAttachments).prefix(QueryAttachment.maximumCount))
+    }
+
+    private func focusEditor() {
+        let notification: Notification.Name = conversation.isEmpty ? .kvartzFocusQuery : .kvartzFocusFollowUp
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.phase != .loading, !self.isRevealingAnswer else { return }
+            NotificationCenter.default.post(name: notification, object: nil)
+        }
     }
 
     @discardableResult
@@ -253,7 +304,7 @@ final class AppModel: ObservableObject {
         displayedAnswer = ""
         // Re-parsing a large Markdown response on every reveal tick blocks
         // layout and scrolling. Show large replies in one update instead.
-        guard answer.count <= 8_000,
+        guard animatesAnswers, answer.count <= 8_000,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             displayedAnswer = answer
             finishAnswerReveal()
@@ -278,9 +329,7 @@ final class AppModel: ObservableObject {
 
     private func finishAnswerReveal() {
         isRevealingAnswer = false
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .kvartzFocusFollowUp, object: nil)
-        }
+        focusEditor()
     }
 
     func connectCodex() {
@@ -386,12 +435,13 @@ final class AppModel: ObservableObject {
 }
 
 struct ConversationTurn: Identifiable, Equatable, Sendable {
-    let id = UUID()
+    let id: UUID
     let question: String
     let answer: String
     let attachments: [QueryAttachment]
 
-    init(question: String, answer: String, attachments: [QueryAttachment] = []) {
+    init(id: UUID = UUID(), question: String, answer: String, attachments: [QueryAttachment] = []) {
+        self.id = id
         self.question = question
         self.answer = answer
         self.attachments = attachments

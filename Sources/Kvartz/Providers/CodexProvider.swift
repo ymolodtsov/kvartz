@@ -28,14 +28,18 @@ actor CodexProvider {
                 guard let name = model["model"] as? String, !name.isEmpty else { continue }
                 if seen.insert(name).inserted { names.append(name) }
             }
-            cursor = result["nextCursor"] as? String
+            let nextCursor = result["nextCursor"] as? String
+            guard nextCursor != cursor || nextCursor == nil else {
+                throw LLMError.codex("Codex returned a repeated model-list cursor. Try again.")
+            }
+            cursor = nextCursor?.isEmpty == false ? nextCursor : nil
         } while cursor != nil
 
         return names
     }
 
     func signIn() async throws -> String {
-        let session = try await connectedSession()
+        let session = try await connectedSession(inactivityTimeout: 300)
         defer { session.stop() }
 
         let current = try await session.request(method: "account/read", params: ["refreshToken": true])
@@ -132,6 +136,9 @@ actor CodexProvider {
                     throw LLMError.codex(error?["message"] as? String ?? "Codex query failed.")
                 }
                 if turn?["status"] as? String == "interrupted" { throw CancellationError() }
+                guard turn?["status"] as? String == "completed" else {
+                    throw LLMError.codex("Codex stopped before the answer was complete. Try again.")
+                }
                 completed = true
                 break
             }
@@ -143,14 +150,14 @@ actor CodexProvider {
         return CodexOutputSanitizer.stripUnsupportedCitations(from: output.answer)
     }
 
-    private func connectedSession() async throws -> CodexRPCSession {
+    private func connectedSession(inactivityTimeout: TimeInterval = 120) async throws -> CodexRPCSession {
         let executable = try CodexRPCSession.locateExecutable()
-        let session = CodexRPCSession(executableURL: executable)
+        let session = CodexRPCSession(executableURL: executable, inactivityTimeout: inactivityTimeout)
         try session.start()
         do {
             _ = try await session.request(
                 method: "initialize",
-                params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": "0.1.4"]]
+                params: ["clientInfo": ["name": "kvartz", "title": "Kvartz", "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"]]
             )
             try session.notify(method: "initialized", params: [:])
             return session
@@ -251,10 +258,14 @@ final class CodexRPCSession: @unchecked Sendable {
     private var pending: [Int: CheckedContinuation<JSON, Error>] = [:]
     private var isFinished = false
     private let requestTimeout: TimeInterval
+    private let inactivityTimeout: TimeInterval
+    private var inactivityTimer: DispatchSourceTimer?
+    private var failureMessage: String?
 
-    init(executableURL: URL, requestTimeout: TimeInterval = 30) {
+    init(executableURL: URL, requestTimeout: TimeInterval = 30, inactivityTimeout: TimeInterval = 120) {
         self.executableURL = executableURL
         self.requestTimeout = requestTimeout
+        self.inactivityTimeout = inactivityTimeout
         var continuation: AsyncStream<JSON>.Continuation!
         self.notifications = AsyncStream { continuation = $0 }
         self.notificationContinuation = continuation
@@ -307,16 +318,21 @@ final class CodexRPCSession: @unchecked Sendable {
         throw LLMError.codex("A working Codex executable was not found. Install ChatGPT or Codex CLI, or set its executable path in Settings.")
     }
 
-    private static func isUsableExecutable(at path: String) -> Bool {
+    static func isUsableExecutable(at path: String, timeout: TimeInterval = 2) -> Bool {
         guard !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) else { return false }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["--version"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
-            process.waitUntilExit()
+            guard exited.wait(timeout: .now() + timeout) == .success else {
+                if process.isRunning { process.terminate() }
+                return false
+            }
             return process.terminationStatus == 0
         } catch {
             return false
@@ -329,7 +345,8 @@ final class CodexRPCSession: @unchecked Sendable {
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        process.terminationHandler = { [weak self] _ in self?.finish() }
+        // Drain stdout through EOF before finishing; process termination can
+        // arrive before the final response bytes have been consumed.
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty { self?.finish(); return }
@@ -346,6 +363,7 @@ final class CodexRPCSession: @unchecked Sendable {
             }
         }
         try process.run()
+        queue.async { self.resetInactivityTimer() }
     }
 
     func request(method: String, params: JSON = [:]) async throws -> JSON {
@@ -395,6 +413,8 @@ final class CodexRPCSession: @unchecked Sendable {
     }
 
     private func consume(_ data: Data) {
+        guard !isFinished else { return }
+        resetInactivityTimer()
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[..<newline]
@@ -407,6 +427,15 @@ final class CodexRPCSession: @unchecked Sendable {
     }
 
     private func handle(_ message: JSON) {
+        // Server requests have their own ID namespace. Never consume a pending
+        // client continuation just because a server request uses the same ID.
+        if let id = message["id"], message["method"] != nil {
+            try? write([
+                "id": id,
+                "error": ["code": -32601, "message": "Kvartz does not support interactive server requests."]
+            ])
+            return
+        }
         if let id = message["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
             if let error = message["error"] as? JSON {
                 continuation.resume(throwing: LLMError.codex(error["message"] as? String ?? "Codex request failed."))
@@ -422,13 +451,32 @@ final class CodexRPCSession: @unchecked Sendable {
         queue.async {
             guard !self.isFinished else { return }
             self.isFinished = true
+            self.inactivityTimer?.cancel()
+            self.inactivityTimer = nil
             let pending = self.pending
             self.pending.removeAll()
             let details = String(data: self.errorBuffer, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let message = details.flatMap { $0.isEmpty ? nil : $0 } ?? "Codex app-server stopped."
+            let message = self.failureMessage ?? details.flatMap { $0.isEmpty ? nil : $0 } ?? "Codex app-server stopped."
             pending.values.forEach { $0.resume(throwing: LLMError.codex(message)) }
             self.notificationContinuation.finish()
+        }
+    }
+
+    private func resetInactivityTimer() {
+        guard !isFinished else { return }
+        if inactivityTimer == nil {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.failureMessage = "Codex stopped responding. Try again."
+                self.stop()
+            }
+            inactivityTimer = timer
+            timer.schedule(deadline: .now() + inactivityTimeout)
+            timer.resume()
+        } else {
+            inactivityTimer?.schedule(deadline: .now() + inactivityTimeout)
         }
     }
 }

@@ -195,8 +195,7 @@ struct SettingsView: View {
                     .lineLimit(2)
                 Spacer()
                 Button(model.isConnectingCodex ? "Connecting…" : "Connect ChatGPT") {
-                    saveConfiguration()
-                    model.connectCodex()
+                    if saveConfiguration() { model.connectCodex() }
                 }
                 .disabled(model.isConnectingCodex)
             }
@@ -383,8 +382,12 @@ struct SettingsView: View {
             get: { configuration.model },
             set: { value in
                 configuration.model = value
-                configuration.saveModel()
-                saveMessage = "Saved automatically"
+                if isEnteringCustomModel {
+                    saveMessage = ""
+                } else {
+                    configuration.saveModel()
+                    saveMessage = "Saved automatically"
+                }
             }
         )
     }
@@ -420,7 +423,8 @@ struct SettingsView: View {
         Task { await model.refreshCodexModels() }
     }
 
-    private func saveConfiguration() {
+    @discardableResult
+    private func saveConfiguration() -> Bool {
         do {
             try configuration.save()
             if configuration.provider == .codex {
@@ -428,8 +432,10 @@ struct SettingsView: View {
             }
             model.refreshConfiguredProviders()
             saveMessage = "Saved"
+            return true
         } catch {
             saveMessage = error.localizedDescription
+            return false
         }
     }
 }
@@ -445,8 +451,8 @@ private struct ModelSelector: View {
             Menu {
                 ForEach(suggestions, id: \.self) { suggestion in
                     Button {
-                        model = suggestion
                         isEnteringCustomModel = false
+                        model = suggestion
                     } label: {
                         if model == suggestion {
                             Label(suggestion, systemImage: "checkmark")

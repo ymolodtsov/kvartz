@@ -4,7 +4,8 @@ import Foundation
 struct QueryAttachment: Identifiable, Equatable, Sendable {
     static let maximumCount = 5
     private static let maximumPixelDimension = 2_048
-    private static let maximumEncodedBytes = 8 * 1_024 * 1_024
+    // Leave room for base64 expansion and five attachments in provider requests.
+    private static let maximumEncodedBytes = 4 * 1_024 * 1_024
 
     let id: UUID
     let name: String
@@ -115,13 +116,15 @@ final class QueryAttachmentImageCache: @unchecked Sendable {
 
     private init() {
         cache.countLimit = QueryAttachment.maximumCount * 4
+        cache.totalCostLimit = 32 * 1_024 * 1_024
     }
 
     func image(for attachment: QueryAttachment) -> NSImage? {
         let key = attachment.id as NSUUID
         if let cached = cache.object(forKey: key) { return cached }
         guard let image = NSImage(data: attachment.data) else { return nil }
-        cache.setObject(image, forKey: key)
+        let pixels = image.representations.map { $0.pixelsWide * $0.pixelsHigh }.max() ?? 0
+        cache.setObject(image, forKey: key, cost: max(attachment.data.count, pixels * 4))
         return image
     }
 }

@@ -2,6 +2,11 @@ import Foundation
 
 actor LLMService {
     static let shared = LLMService()
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
 
     func answer(
         messages: [ConversationMessage],
@@ -52,10 +57,15 @@ actor LLMService {
             body: [
                 "model": config.model,
                 "instructions": systemPrompt,
+                "store": false,
                 "input": ProviderMessagePayloads.openAIResponses(messages),
-                "max_output_tokens": 320
+                "max_output_tokens": 8_192
             ]
         )
+        if json["status"] as? String == "incomplete" { throw LLMError.incompleteResponse }
+        if let error = json["error"] as? [String: Any] {
+            throw LLMError.configuration(error["message"] as? String ?? "The provider could not complete the response.")
+        }
         if let direct = json["output_text"] as? String, !direct.isEmpty { return direct }
         if let output = json["output"] as? [[String: Any]] {
             let texts = output.flatMap { ($0["content"] as? [[String: Any]]) ?? [] }
@@ -75,11 +85,14 @@ actor LLMService {
             headers: ["x-api-key": config.apiKey, "anthropic-version": "2023-06-01"],
             body: [
                 "model": config.model,
-                "max_tokens": 320,
+                "max_tokens": 4_096,
                 "system": systemPrompt,
                 "messages": ProviderMessagePayloads.anthropic(messages)
             ]
         )
+        if ["max_tokens", "model_context_window_exceeded", "pause_turn"].contains(json["stop_reason"] as? String ?? "") {
+            throw LLMError.incompleteResponse
+        }
         let text = (json["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? ""
         guard !text.isEmpty else { throw LLMError.invalidResponse }
         return text
@@ -96,10 +109,11 @@ actor LLMService {
             body: [
                 "systemInstruction": ["parts": [["text": systemPrompt]]],
                 "contents": ProviderMessagePayloads.gemini(messages),
-                "generationConfig": ["maxOutputTokens": 320]
+                "generationConfig": ["maxOutputTokens": 8_192]
             ]
         )
         let candidates = json["candidates"] as? [[String: Any]]
+        if candidates?.first?["finishReason"] as? String == "MAX_TOKENS" { throw LLMError.incompleteResponse }
         let content = candidates?.first?["content"] as? [String: Any]
         let text = (content?["parts"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? ""
         guard !text.isEmpty else { throw LLMError.invalidResponse }
@@ -116,7 +130,7 @@ actor LLMService {
             systemPrompt,
             config,
             additionalHeaders: [
-                "HTTP-Referer": "https://github.com/kvartz-app/kvartz",
+                "HTTP-Referer": "https://github.com/ymolodtsov/kvartz",
                 "X-OpenRouter-Title": "Kvartz"
             ]
         )
@@ -135,12 +149,13 @@ actor LLMService {
             headers: headers,
             body: [
                 "model": config.model,
-                "max_tokens": 320,
+                "max_tokens": 4_096,
                 "messages": [["role": "system", "content": systemPrompt]]
                     + ProviderMessagePayloads.openAIChat(messages)
             ]
         )
         let choices = json["choices"] as? [[String: Any]]
+        if choices?.first?["finish_reason"] as? String == "length" { throw LLMError.incompleteResponse }
         let message = choices?.first?["message"] as? [String: Any]
         guard let text = message?["content"] as? String, !text.isEmpty else { throw LLMError.invalidResponse }
         return text
@@ -157,11 +172,12 @@ actor LLMService {
             body: [
                 "model": config.model,
                 "stream": false,
-                "options": ["num_predict": 320],
+                "options": ["num_predict": 4_096],
                 "messages": [["role": "system", "content": systemPrompt]]
                     + ProviderMessagePayloads.ollama(messages)
             ]
         )
+        if json["done_reason"] as? String == "length" { throw LLMError.incompleteResponse }
         let message = json["message"] as? [String: Any]
         guard let text = message?["content"] as? String, !text.isEmpty else { throw LLMError.invalidResponse }
         return text
@@ -174,17 +190,18 @@ actor LLMService {
     private func post(url: URL, headers: [String: String], body: [String: Any]) async throws -> [String: Any] {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw LLMError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let nested = json?["error"] as? [String: Any]
             let message = nested?["message"] as? String
+                ?? json?["error"] as? String
                 ?? json?["message"] as? String
                 ?? String(data: data, encoding: .utf8)
                 ?? "Request failed"
@@ -293,12 +310,14 @@ enum LLMError: LocalizedError {
     case configuration(String)
     case http(Int, String)
     case invalidResponse
+    case incompleteResponse
     case codex(String)
 
     var errorDescription: String? {
         switch self {
         case .configuration(let message): message
         case .http(let status, let message): "Provider error \(status): \(message)"
+        case .incompleteResponse: "The provider stopped before finishing the answer. Try a shorter question or choose another model."
         case .invalidResponse: "The provider returned an unreadable response."
         case .codex(let message): message
         }

@@ -135,7 +135,9 @@ struct ProviderConfiguration: Equatable {
     }
 
     func saveModel(to defaults: UserDefaults = .standard) {
-        defaults.set(model, forKey: "provider.\(provider.rawValue).model")
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        defaults.set(trimmed, forKey: "provider.\(provider.rawValue).model")
     }
 
     func isConfigured(using defaults: UserDefaults = .standard) -> Bool {

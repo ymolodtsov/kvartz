@@ -61,6 +61,7 @@ func panelPositionNearCursor(
     visibleFrame: NSRect,
     gap: CGFloat = 12
 ) -> CursorPanelPosition {
+    let panelSize = NSSize(width: min(panelSize.width, visibleFrame.width), height: min(panelSize.height, visibleFrame.height))
     let cursorX = min(max(cursor.x, visibleFrame.minX), visibleFrame.maxX)
     let cursorY = min(max(cursor.y, visibleFrame.minY), visibleFrame.maxY)
     let maximumX = max(visibleFrame.minX, visibleFrame.maxX - panelSize.width)
@@ -91,6 +92,7 @@ func panelFrameAtSavedPosition(
     panelSize: NSSize,
     visibleFrame: NSRect
 ) -> NSRect {
+    let panelSize = NSSize(width: min(panelSize.width, visibleFrame.width), height: min(panelSize.height, visibleFrame.height))
     let height = min(panelSize.height, visibleFrame.height)
     let maximumX = max(visibleFrame.minX, visibleFrame.maxX - panelSize.width)
     let maximumY = max(visibleFrame.minY, visibleFrame.maxY - height)

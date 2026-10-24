@@ -187,6 +187,39 @@ final class ConversationFlowTests: XCTestCase {
         XCTAssertTrue(submitted)
     }
 
+    func testAnimatedAnswerRendersThroughItsFinalSentence() async throws {
+        _ = NSApplication.shared
+        let response = "Preheat oven to 180 degrees.\n\nMix peaches with sugar and lemon juice. Spread them in a baking dish.\n\nCombine flour, sugar, baking powder, milk, and melted butter. Spoon the batter over the fruit.\n\nBake until golden and bubbling. Serve warm with vanilla ice cream."
+        let model = AppModel(provider: .ollama, animatesAnswers: true) { _, _, _ in
+            try await Task.sleep(for: .milliseconds(400))
+            return response
+        }
+        let controller = QueryPanelController(model: model)
+        controller.show()
+        let window = try XCTUnwrap(controller.window)
+        let hosting = try XCTUnwrap(window.contentView)
+        defer { window.close(); model.reset() }
+        model.query = "Peach cobbler recipe"
+        withAnimation(.smooth(duration: 0.32)) { model.submit() }
+        try await Task.sleep(for: .seconds(5))
+        XCTAssertFalse(model.isRevealingAnswer)
+        XCTAssertEqual(model.displayedAnswer, response)
+        hosting.layoutSubtreeIfNeeded()
+        hosting.displayIfNeeded()
+        let bitmap = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        if let directory = ProcessInfo.processInfo.environment["KVARTZ_UI_SNAPSHOTS"] {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("animated-answer.png"))
+        }
+        let recognition = VNRecognizeTextRequest()
+        recognition.recognitionLevel = .accurate
+        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([recognition])
+        let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        XCTAssertTrue(text.contains("vanilla ice cream"), "The model finished, but the visible answer is incomplete: \(text)")
+    }
+
     func testRenderFollowUpFlow() async throws {
         guard let directory = ProcessInfo.processInfo.environment["KVARTZ_UI_SNAPSHOTS"] else {
             throw XCTSkip("Set KVARTZ_UI_SNAPSHOTS to render native conversation snapshots")
@@ -201,7 +234,7 @@ final class ConversationFlowTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        func snapshot(_ name: String, containing expectedText: String) async throws {
+        func snapshot(_ name: String, containing expectedText: String, answer expectedAnswer: String? = nil) async throws {
             try await Task.sleep(for: .milliseconds(500))
             hosting.layoutSubtreeIfNeeded()
             hosting.displayIfNeeded()
@@ -214,20 +247,23 @@ final class ConversationFlowTests: XCTestCase {
             try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([recognition])
             let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
             XCTAssertTrue(text.contains(expectedText), "Missing rendered text: \(expectedText). Found: \(text)")
+            if let expectedAnswer {
+                XCTAssertTrue(text.contains(expectedAnswer), "Missing rendered answer: \(expectedAnswer). Found: \(text)")
+            }
         }
         model.query = "How to move Apple Watch to a new iPhone after recovery?"
         model.submit()
         try await waitUntil { replies.messages.count == 1 }
         replies.complete(0, with: .success("On the recovered iPhone:\n\n1. Restore your iPhone backup and sign in with the same Apple Account.\n2. Open the Watch app and tap **Pair New Watch**.\n3. Choose **Restore from Backup** if prompted.\n\nIf the Watch is still paired to the old iPhone, unpair it there first."))
         try await waitUntil { model.phase == .answer }
-        try await snapshot("01-first-answer", containing: "How to move Apple Watch")
+        try await snapshot("01-first-answer", containing: "How to move Apple Watch", answer: "unpair it there first")
         model.followUpQuery = "How do I unpair it on the old iPhone?"
         model.submitFollowUp()
         try await waitUntil { replies.messages.count == 2 }
         try await snapshot("02-follow-up-loading", containing: "How do I unpair it on the old iPhone?")
         replies.complete(1, with: .success("On the old iPhone:\n\n1. Open the Watch app.\n2. Tap **My Watch → All Watches**.\n3. Tap ⓘ, then **Unpair Apple Watch**.\n4. Enter your Apple Account password if asked.\n\nThen pair the Watch on the recovered iPhone."))
         try await waitUntil { model.phase == .answer }
-        try await snapshot("03-follow-up-answer", containing: "How do I unpair it on the old iPhone?")
+        try await snapshot("03-follow-up-answer", containing: "How do I unpair it on the old iPhone?", answer: "Then pair the Watch on the recovered iPhone")
         model.followUpQuery = "What if the old phone is unavailable?"
         model.submitFollowUp()
         try await waitUntil { replies.messages.count == 3 }
@@ -251,7 +287,7 @@ final class ConversationFlowTests: XCTestCase {
         let endY = max(0, document.bounds.height - scrollView.contentView.bounds.height)
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: document.isFlipped ? endY : 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        try await snapshot("06-scrolled-to-bottom", containing: "What if the old phone is unavailable?")
+        try await snapshot("06-scrolled-to-bottom", containing: "What if the old phone is unavailable?", answer: "Recovery step 30")
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: document.isFlipped ? 0 : endY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         try await snapshot("07-scrolled-to-top", containing: "How to move Apple Watch")

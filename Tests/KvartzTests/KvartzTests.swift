@@ -338,6 +338,20 @@ final class KvartzTests: XCTestCase {
         configuration.model = "another-model"
         configuration.saveModel(to: defaults)
         XCTAssertEqual(defaults.string(forKey: "provider.codex.model"), "another-model")
+        configuration.model = " \n "
+        configuration.saveModel(to: defaults)
+        XCTAssertEqual(defaults.string(forKey: "provider.codex.model"), "another-model")
+        configuration.model = " trimmed-model \n"
+        configuration.saveModel(to: defaults)
+        XCTAssertEqual(defaults.string(forKey: "provider.codex.model"), "trimmed-model")
+    }
+
+    func testOpeningPanelFitsDisplaysNarrowerThanItsDefaultWidth() {
+        let visible = NSRect(x: -300, y: 50, width: 300, height: 500)
+        let cursor = panelPositionNearCursor(cursor: NSPoint(x: -150, y: 400), panelSize: NSSize(width: 420, height: 200), visibleFrame: visible)
+        XCTAssertTrue(visible.contains(cursor.frame))
+        let saved = panelFrameAtSavedPosition(anchorX: -150, topY: 400, panelSize: NSSize(width: 420, height: 200), visibleFrame: visible)
+        XCTAssertTrue(visible.contains(saved))
     }
 
     func testCurrentProviderDefaults() {

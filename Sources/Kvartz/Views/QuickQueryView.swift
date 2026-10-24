@@ -507,7 +507,7 @@ struct QuickQueryView: View {
         turn: ConversationTurn,
         pinnedHeaderHeight: CGFloat?
     ) -> some View {
-        let content = renderedAnswer(for: index, turn: turn)
+        let content = ConversationAnswerView(model: model, turn: turn)
             .id(answerAnchor(index: index))
             .padding(.top, 14)
             .padding(.bottom, answerBottomPadding(for: index))
@@ -610,6 +610,7 @@ struct QuickQueryView: View {
 
     private func importDroppedImages(_ providers: [NSItemProvider]) -> Bool {
         var acceptedDrop = false
+        let sessionID = model.sessionID
 
         for provider in providers {
             if provider.canLoadObject(ofClass: NSImage.self) {
@@ -617,6 +618,7 @@ struct QuickQueryView: View {
                 provider.loadObject(ofClass: NSImage.self) { object, _ in
                     guard let image = object as? NSImage else { return }
                     DispatchQueue.main.async {
+                        guard model.sessionID == sessionID else { return }
                         model.addAttachment(image, suggestedName: provider.suggestedName ?? "Dropped image")
                     }
                 }
@@ -634,6 +636,7 @@ struct QuickQueryView: View {
                     }
                     guard let url, url.isFileURL else { return }
                     DispatchQueue.main.async {
+                        guard model.sessionID == sessionID else { return }
                         model.addAttachment(from: url)
                     }
                 }
@@ -664,36 +667,6 @@ struct QuickQueryView: View {
         withAnimation(sendAnimation) {
             model.submitFollowUp()
         }
-    }
-
-    private func answerText(for index: Int, turn: ConversationTurn) -> String {
-        if index == model.conversation.count - 1, model.phase == .answer {
-            return model.displayedAnswer
-        }
-        return turn.answer
-    }
-
-    private func renderedAnswer(for index: Int, turn: ConversationTurn) -> some View {
-        ZStack(alignment: .topLeading) {
-            if index == model.conversation.count - 1, model.isRevealingAnswer {
-                formattedAnswer(turn.answer)
-                    .hidden()
-                    .accessibilityHidden(true)
-            }
-
-            formattedAnswer(answerText(for: index, turn: turn))
-                .textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func formattedAnswer(_ answer: String) -> some View {
-        Text(markdown: answer)
-            .font(.system(size: 16, weight: .regular))
-            .foregroundStyle(.white.opacity(0.93))
-            .lineSpacing(4)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var errorView: some View {
@@ -727,6 +700,44 @@ struct QuickQueryView: View {
                 didCopy = false
             }
         }
+    }
+}
+
+// Lazy sections can retain the view created during the panel's resize. Observe
+// reveal changes at the text leaf so that retained rows still receive every update.
+private struct ConversationAnswerView: View {
+    @ObservedObject var model: AppModel
+    let turn: ConversationTurn
+
+    private var isLatestAnswer: Bool {
+        turn.id == model.conversation.last?.id && model.phase == .answer
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if isLatestAnswer && model.isRevealingAnswer {
+                FormattedAnswer(answer: turn.answer).equatable()
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+
+            FormattedAnswer(answer: isLatestAnswer ? model.displayedAnswer : turn.answer).equatable()
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct FormattedAnswer: View, Equatable {
+    let answer: String
+
+    var body: some View {
+        Text(markdown: answer)
+            .font(.system(size: 16, weight: .regular))
+            .foregroundStyle(.white.opacity(0.93))
+            .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -59,6 +59,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var conversation: [ConversationTurn] = []
     @Published private(set) var pendingQuestion = ""
     @Published private(set) var pendingTurnID: UUID?
+    private(set) var sessionID = UUID()
     @Published var systemPrompt: String {
         didSet { PromptPolicy.save(systemPrompt) }
     }
@@ -207,6 +208,7 @@ final class AppModel: ObservableObject {
     }
 
     func reset() {
+        sessionID = UUID()
         requestTask?.cancel()
         typingTask?.cancel()
         requestTask = nil
@@ -311,14 +313,16 @@ final class AppModel: ObservableObject {
             return
         }
         let characters = Array(answer)
-        let chunkSize = max(1, characters.count / 180)
+        // Keep the reveal under about 1.2 seconds with at most 40 Markdown
+        // layout updates, independent of the response length.
+        let chunkSize = max(1, (characters.count + 39) / 40)
         typingTask = Task {
             var index = 0
             while index < characters.count, !Task.isCancelled {
                 let end = min(index + chunkSize, characters.count)
                 displayedAnswer.append(contentsOf: characters[index..<end])
                 index = end
-                try? await Task.sleep(for: .milliseconds(12))
+                try? await Task.sleep(for: .milliseconds(30))
             }
             if !Task.isCancelled {
                 displayedAnswer = answer

@@ -74,4 +74,50 @@ final class CodexTransportTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("stopped"))
         }
     }
+
+    func testSilentNotificationStreamFinishesAfterInactivity() async throws {
+        let executable = try makeServer()
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        let session = CodexRPCSession(executableURL: executable, inactivityTimeout: 0.05)
+        try session.start()
+        defer { session.stop() }
+        let start = Date()
+        for await _ in session.notifications {}
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    func testExecutableProbeCannotHangIndefinitely() throws {
+        let executable = try makeServer()
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        try "#!/bin/sh\nexec /bin/sleep 10\n".write(to: executable, atomically: true, encoding: .utf8)
+        let start = Date()
+        XCTAssertFalse(CodexRPCSession.isUsableExecutable(at: executable.path, timeout: 0.05))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    func testServerRequestCannotStealClientResponseAndFinalBytesAreDrained() async throws {
+        let executable = try makeServer()
+        defer { try? FileManager.default.removeItem(at: executable.deletingLastPathComponent()) }
+        try """
+        #!/bin/sh
+        IFS= read -r line
+        echo '{"id":1,"method":"item/tool/requestUserInput","params":{}}'
+        IFS= read -r reply
+        case "$reply" in
+          *-32601*) echo '{"id":1,"result":{"ok":true}}' ;;
+          *) exit 1 ;;
+        esac
+        echo '{"method":"turn/completed","params":{"turn":{"status":"completed"}}}'
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        let session = CodexRPCSession(executableURL: executable, requestTimeout: 1)
+        try session.start()
+        defer { session.stop() }
+        let response = try await session.request(method: "initialize")
+        XCTAssertEqual(response["ok"] as? Bool, true)
+        var methods: [String] = []
+        for await notification in session.notifications {
+            if let method = notification["method"] as? String { methods.append(method) }
+        }
+        XCTAssertEqual(methods, ["turn/completed"])
+    }
 }
